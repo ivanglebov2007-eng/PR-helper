@@ -465,63 +465,11 @@ async def finish_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop('request_data', None)
         return
 
-    screenshot_info = request_data.get('screenshot_info', {})
-    photo_file_id = screenshot_info.get('file_id')
-    photo_caption = screenshot_info.get('caption', f"📸 Скриншот для запроса: {request_data['channel_name']}")
-    
-    photo_sent = False
-    
-    if photo_file_id:
-        try:
-            sent_photo = await context.bot.send_photo(
-                chat_id=GROUP_ID,
-                photo=photo_file_id,
-                caption=photo_caption,
-                parse_mode=ParseMode.HTML
-            )
-            photo_sent = True
-            logger.info("✅ Фото отправлено в группу по file_id")
-        except Exception as e:
-            logger.error(f"❌ Ошибка отправки фото по file_id: {e}")
-            try:
-                sent_doc = await context.bot.send_document(
-                    chat_id=GROUP_ID,
-                    document=photo_file_id,
-                    caption=photo_caption
-                )
-                photo_sent = True
-                logger.info("✅ Фото отправлено как документ")
-            except Exception as e2:
-                logger.error(f"❌ Ошибка отправки документа: {e2}")
-    
-    if not photo_sent:
-        screenshot_url = request_data.get('screenshot')
-        if screenshot_url:
-            try:
-                await context.bot.send_photo(
-                    chat_id=GROUP_ID,
-                    photo=screenshot_url,
-                    caption=photo_caption,
-                    parse_mode=ParseMode.HTML
-                )
-                photo_sent = True
-                logger.info("✅ Фото отправлено по ссылке")
-            except Exception as e:
-                logger.error(f"❌ Ошибка отправки фото по ссылке: {e}")
-                try:
-                    await context.bot.send_message(
-                        chat_id=GROUP_ID,
-                        text=f"📸 {photo_caption}\n{screenshot_url}",
-                        parse_mode=ParseMode.HTML
-                    )
-                    photo_sent = True
-                    logger.info("✅ Ссылка на скриншот отправлена")
-                except Exception as e3:
-                    logger.error(f"❌ Ошибка отправки ссылки: {e3}")
-
-    topic_id = await create_request_topic(update, context, request_data, photo_sent, request_data.get('screenshot'))
+    # СНАЧАЛА СОЗДАЁМ ТЕМУ, ПОТОМ ОТПРАВЛЯЕМ ФОТО В НЕЁ
+    topic_id = await create_request_topic(update, context, request_data)
 
     if topic_id:
+        # Сохраняем в БД
         request_obj = RequestData(
             screenshot=request_data.get('screenshot', 'Не указан'),
             media_link=request_data['media_link'],
@@ -533,6 +481,75 @@ async def finish_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
             created_at=datetime.now().isoformat()
         )
         db.add_topic(topic_id, request_obj)
+
+        # === ОТПРАВЛЯЕМ ФОТО ВНУТРЬ ТЕМЫ ===
+        screenshot_info = request_data.get('screenshot_info', {})
+        photo_file_id = screenshot_info.get('file_id')
+        photo_caption = screenshot_info.get('caption', f"📸 Скриншот для запроса: {request_data['channel_name']}")
+        
+        photo_sent = False
+        
+        if photo_file_id:
+            try:
+                await context.bot.send_photo(
+                    chat_id=GROUP_ID,
+                    message_thread_id=topic_id,  # <--- ВАЖНО: отправляем в тему!
+                    photo=photo_file_id,
+                    caption=photo_caption,
+                    parse_mode=ParseMode.HTML
+                )
+                photo_sent = True
+                logger.info(f"✅ Фото отправлено в тему {topic_id} по file_id")
+            except Exception as e:
+                logger.error(f"❌ Ошибка отправки фото по file_id в тему: {e}")
+                try:
+                    await context.bot.send_document(
+                        chat_id=GROUP_ID,
+                        message_thread_id=topic_id,  # <--- ВАЖНО: отправляем в тему!
+                        document=photo_file_id,
+                        caption=photo_caption
+                    )
+                    photo_sent = True
+                    logger.info(f"✅ Фото отправлено в тему {topic_id} как документ")
+                except Exception as e2:
+                    logger.error(f"❌ Ошибка отправки документа в тему: {e2}")
+        
+        if not photo_sent:
+            screenshot_url = request_data.get('screenshot')
+            if screenshot_url:
+                try:
+                    await context.bot.send_photo(
+                        chat_id=GROUP_ID,
+                        message_thread_id=topic_id,  # <--- ВАЖНО: отправляем в тему!
+                        photo=screenshot_url,
+                        caption=photo_caption,
+                        parse_mode=ParseMode.HTML
+                    )
+                    photo_sent = True
+                    logger.info(f"✅ Фото отправлено в тему {topic_id} по ссылке")
+                except Exception as e:
+                    logger.error(f"❌ Ошибка отправки фото по ссылке в тему: {e}")
+                    try:
+                        await context.bot.send_message(
+                            chat_id=GROUP_ID,
+                            message_thread_id=topic_id,  # <--- ВАЖНО: отправляем в тему!
+                            text=f"📸 {photo_caption}\n{screenshot_url}",
+                            parse_mode=ParseMode.HTML
+                        )
+                        photo_sent = True
+                        logger.info(f"✅ Ссылка на скриншот отправлена в тему {topic_id}")
+                    except Exception as e3:
+                        logger.error(f"❌ Ошибка отправки ссылки в тему: {e3}")
+
+        # Если фото не отправилось, отправляем сообщение об ошибке в тему
+        if not photo_sent:
+            await context.bot.send_message(
+                chat_id=GROUP_ID,
+                message_thread_id=topic_id,
+                text="❌ Не удалось отправить скриншот. Проверьте доступность файла.",
+                parse_mode=ParseMode.HTML
+            )
+
         keyboard = get_main_reply_keyboard(
             is_admin=is_admin(user_id),
             is_creator=is_creator(user_id)
@@ -560,17 +577,21 @@ async def finish_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop('request_state', None)
     context.user_data.pop('request_data', None)
 
-async def create_request_topic(update: Update, context: ContextTypes.DEFAULT_TYPE, request_data: dict, photo_sent: bool = False, screenshot_url: str = None) -> Optional[int]:
+
+async def create_request_topic(update: Update, context: ContextTypes.DEFAULT_TYPE, request_data: dict) -> Optional[int]:
     user = update.effective_user
     topic_title = f"Запрос от {user.full_name} — {request_data['channel_name']}"
     try:
         if GROUP_ID == 0:
             logger.error("GROUP_ID не настроен!")
             return None
+        
         chat = await context.bot.get_chat(GROUP_ID)
         logger.info(f"✅ Группа: {chat.title} (ID: {chat.id})")
+        
         bot_member = await context.bot.get_chat_member(GROUP_ID, context.bot.id)
         logger.info(f"Статус бота: {bot_member.status}")
+        
         logger.info(f"📝 Создаю тему: {topic_title[:255]}")
         topic = await context.bot.create_forum_topic(
             chat_id=GROUP_ID,
@@ -578,12 +599,8 @@ async def create_request_topic(update: Update, context: ContextTypes.DEFAULT_TYP
         )
         topic_id = topic.message_thread_id
         logger.info(f"✅ Тема создана! ID: {topic_id}")
-        if photo_sent:
-            photo_text = "📸 Скриншот приложен выше"
-        elif screenshot_url:
-            photo_text = f"📸 <a href='{screenshot_url}'>Скриншот</a>"
-        else:
-            photo_text = "📸 Скриншот: (не удалось отправить)"
+        
+        # Отправляем основное сообщение в тему (без фото)
         text = (
             f"📢 <b>НОВЫЙ ЗАПРОС НА МЕДИА-ПАРТНЕРСТВО</b>\n\n"
             f"👤 <b>PR Менеджер:</b> {sanitize_text(user.full_name)}\n"
@@ -594,9 +611,10 @@ async def create_request_topic(update: Update, context: ContextTypes.DEFAULT_TYP
             f"🔗 <b>Ссылка:</b> <a href='{request_data['media_link']}'>Открыть</a>\n"
             f"📞 <b>Связь:</b> <a href='{request_data['contact_link']}'>Написать</a>\n"
             f"📝 <b>Условия:</b>\n{sanitize_text(request_data.get('conditions', 'Не указаны'))}\n\n"
-            f"{photo_text}\n\n"
+            f"📸 <b>Скриншот будет отправлен следующим сообщением</b>\n\n"
             f"⏳ <b>Ожидайте ответа от руководства!</b>"
         )
+        
         await context.bot.send_message(
             chat_id=GROUP_ID,
             message_thread_id=topic_id,
@@ -604,6 +622,8 @@ async def create_request_topic(update: Update, context: ContextTypes.DEFAULT_TYP
             parse_mode=ParseMode.HTML,
             disable_web_page_preview=True
         )
+        
+        # Уведомляем Chief
         chief_name = await get_user_name(context, CHIEF_ID)
         try:
             await context.bot.send_message(
@@ -615,6 +635,8 @@ async def create_request_topic(update: Update, context: ContextTypes.DEFAULT_TYP
             logger.info("✅ Chief уведомлён")
         except Exception as e:
             logger.error(f"❌ Ошибка тегирования Chief: {e}")
+        
+        # Уведомляем Dep.Chief
         dep_chiefs = db.get_dep_chiefs()
         if dep_chiefs:
             for dep_id in dep_chiefs:
@@ -631,6 +653,8 @@ async def create_request_topic(update: Update, context: ContextTypes.DEFAULT_TYP
                     logger.error(f"❌ Ошибка тегирования Dep.Chief {dep_id}: {e}")
         else:
             logger.info("ℹ️ Dep.Chief не найдены в БД")
+        
+        # Скрываем тему от обычных пользователей
         try:
             admins = await context.bot.get_chat_administrators(GROUP_ID)
             await context.bot.set_forum_topic_permissions(
@@ -669,8 +693,10 @@ async def create_request_topic(update: Update, context: ContextTypes.DEFAULT_TYP
             logger.info(f"✅ Тема {topic_id} скрыта от обычных пользователей")
         except Exception as e:
             logger.warning(f"⚠️ Не удалось скрыть тему: {e}")
+        
         logger.info(f"✅ Тема {topic_id} создана успешно!")
         return topic_id
+        
     except Exception as e:
         logger.error(f"❌ Ошибка создания темы: {e}")
         return None
