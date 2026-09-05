@@ -31,17 +31,14 @@ class RequestData:
     def from_dict(cls, data: dict):
         return cls(**data)
 
-
 class Database:
     def __init__(self, database_url: str = None):
         if database_url is None:
             database_url = DATABASE_URL
-        
         self.database_url = database_url
         self.conn = None
         self.cursor = None
         self.pending_requests: Dict[int, dict] = {}
-        
         self._connect()
         self._create_tables()
         logger.info(f"✅ PostgreSQL база данных инициализирована")
@@ -67,7 +64,6 @@ class Database:
                     added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
-            
             self.cursor.execute('''
                 CREATE TABLE IF NOT EXISTS topics (
                     topic_id BIGINT PRIMARY KEY,
@@ -84,7 +80,6 @@ class Database:
                     closed_at TIMESTAMP
                 )
             ''')
-            
             self.cursor.execute('''
                 CREATE TABLE IF NOT EXISTS user_topics (
                     user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
@@ -92,16 +87,13 @@ class Database:
                     PRIMARY KEY (user_id, topic_id)
                 )
             ''')
-            
             self.cursor.execute('CREATE INDEX IF NOT EXISTS idx_topics_channel ON topics(channel_name)')
             self.cursor.execute('CREATE INDEX IF NOT EXISTS idx_topics_active ON topics(is_active)')
             self.cursor.execute('CREATE INDEX IF NOT EXISTS idx_topics_user ON topics(user_id)')
             self.cursor.execute('CREATE INDEX IF NOT EXISTS idx_topics_created ON topics(created_at DESC)')
             self.cursor.execute('CREATE INDEX IF NOT EXISTS idx_user_topics_user ON user_topics(user_id)')
-            
             self.conn.commit()
             logger.info("✅ Таблицы созданы/обновлены")
-            
         except Exception as e:
             logger.error(f"❌ Ошибка создания таблиц: {e}")
             self.conn.rollback()
@@ -197,7 +189,6 @@ class Database:
     def add_topic(self, topic_id: int, request_data: RequestData):
         try:
             self.add_user(request_data.user_id, role='pr')
-            
             self._execute('''
                 INSERT INTO topics (
                     topic_id, user_id, screenshot, media_link, channel_name,
@@ -215,15 +206,12 @@ class Database:
                 request_data.created_at,
                 request_data.is_active
             ))
-            
             self._execute('''
                 INSERT INTO user_topics (user_id, topic_id)
                 VALUES (%s, %s)
                 ON CONFLICT (user_id, topic_id) DO NOTHING
             ''', (request_data.user_id, topic_id))
-            
             logger.info(f"✅ Тема {topic_id} добавлена в БД")
-            
         except Exception as e:
             logger.error(f"❌ Ошибка добавления темы {topic_id}: {e}")
             raise
@@ -235,10 +223,8 @@ class Database:
                 SET is_active = FALSE, closed_by = %s, closed_at = %s
                 WHERE topic_id = %s
             ''', (closed_by, datetime.now().isoformat(), topic_id))
-            
             logger.info(f"✅ Тема {topic_id} закрыта")
             return True
-            
         except Exception as e:
             logger.error(f"❌ Ошибка закрытия темы {topic_id}: {e}")
             return False
@@ -320,18 +306,14 @@ class Database:
     
     def search_topics(self, keyword: str, include_archived: bool = False) -> List[Tuple[int, RequestData]]:
         keyword = f"%{keyword}%"
-        
         query = '''
             SELECT * FROM topics 
             WHERE (channel_name ILIKE %s OR conditions ILIKE %s)
         '''
         params = (keyword, keyword)
-        
         if not include_archived:
             query += " AND is_active = TRUE"
-        
         query += " ORDER BY created_at DESC"
-        
         rows = self._fetch_all(query, params)
         result = []
         for row in rows:
