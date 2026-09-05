@@ -101,7 +101,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     )
 
-# ============ СОЗДАНИЕ ЗАПРОСА (новая логика) ============
+# ============ СОЗДАНИЕ ЗАПРОСА ============
 
 async def new_request_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Начало создания запроса"""
@@ -111,8 +111,13 @@ async def new_request_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Нет прав.")
         return
 
-    # Очищаем старые данные и устанавливаем состояние
-    db.set_pending_request(user_id, {})
+    # Проверяем GROUP_ID
+    if GROUP_ID == 0:
+        await update.message.reply_text(
+            "❌ GROUP_ID не настроен! Обратитесь к администратору."
+        )
+        return
+
     context.user_data['request_state'] = 'SCREENSHOT'
     context.user_data['request_data'] = {}
 
@@ -128,14 +133,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     state = context.user_data.get('request_state')
     
-    # Если нет активного запроса - игнорируем
     if not state:
         return
     
-    # Получаем данные запроса
     request_data = context.user_data.get('request_data', {})
     
-    # === Шаг 1: Скриншот ===
     if state == 'SCREENSHOT':
         photo = update.message.photo
         if not photo:
@@ -168,7 +170,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         return
     
-    # === Шаг 2: Ссылка на медиа ===
     if state == 'MEDIA_LINK':
         text = update.message.text.strip()
         if not validate_media_link(text):
@@ -193,7 +194,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # === Шаг 3: Название канала ===
     if state == 'CHANNEL_NAME':
         text = update.message.text.strip()
         if not text:
@@ -216,7 +216,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # === Шаг 4: Подписчики ===
     if state == 'SUBSCRIBERS':
         text = update.message.text.strip()
         try:
@@ -245,7 +244,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # === Шаг 5: Ссылка для связи ===
     if state == 'CONTACT_LINK':
         text = update.message.text.strip()
         if not text:
@@ -271,13 +269,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # === Шаг 6: Условия ===
     if state == 'CONDITIONS':
         text = update.message.text.strip()
         request_data['conditions'] = sanitize_text(text) if text else "Не указаны"
         context.user_data['request_data'] = request_data
         
-        # Завершаем создание запроса
         await finish_request(update, context)
 
 async def finish_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -285,10 +281,8 @@ async def finish_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
     
-    # Получаем данные из context.user_data
     request_data = context.user_data.get('request_data', {})
     
-    # Проверяем все поля
     missing = [f for f in REQUIRED_FIELDS if f not in request_data]
     if missing:
         await update.message.reply_text(
@@ -299,11 +293,9 @@ async def finish_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop('request_data', None)
         return
 
-    # Создаем тему
     topic_id = await create_request_topic(update, context, request_data)
 
     if topic_id:
-        # Сохраняем в БД
         request_obj = RequestData(
             screenshot=request_data['screenshot'],
             media_link=request_data['media_link'],
@@ -316,18 +308,31 @@ async def finish_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         db.add_topic(topic_id, request_obj)
 
-        await update.message.reply_text(
-            f"✅ <b>Запрос успешно создан!</b>\n\n"
-            f"🆔 ID темы: <code>{topic_id}</code>\n"
-            f"📌 Тема создана в группе и отмечена для руководства.",
-            parse_mode=ParseMode.HTML
-        )
+        if update.effective_chat:
+            await update.message.reply_text(
+                f"✅ <b>Запрос успешно создан!</b>\n\n"
+                f"🆔 ID темы: <code>{topic_id}</code>\n"
+                f"📌 Тема создана в группе и отмечена для руководства.",
+                parse_mode=ParseMode.HTML
+            )
+        else:
+            await context.bot.send_message(
+                chat_id=user_id,
+                text=f"✅ <b>Запрос успешно создан!</b>\n\n"
+                     f"🆔 ID темы: <code>{topic_id}</code>\n"
+                     f"📌 Тема создана в группе и отмечена для руководства.",
+                parse_mode=ParseMode.HTML
+            )
     else:
-        await update.message.reply_text(
-            "❌ Не удалось создать запрос. Проверьте, что бот является администратором группы."
-        )
+        error_msg = "❌ Не удалось создать запрос. Проверьте:\n" \
+                    "1. Что бот является администратором группы\n" \
+                    "2. Что в группе включён режим форума\n" \
+                    "3. Что у бота есть право 'Управление темами'"
+        if update.effective_chat:
+            await update.message.reply_text(error_msg)
+        else:
+            await context.bot.send_message(chat_id=user_id, text=error_msg)
 
-    # Очищаем состояние
     context.user_data.pop('request_state', None)
     context.user_data.pop('request_data', None)
 
@@ -337,6 +342,25 @@ async def create_request_topic(update: Update, context: ContextTypes.DEFAULT_TYP
     topic_title = f"Запрос от {user.full_name} — {request_data['channel_name']}"
 
     try:
+        if GROUP_ID == 0:
+            logger.error("GROUP_ID не настроен!")
+            return None
+
+        # Проверяем, что бот может создавать темы
+        try:
+            # Сначала проверяем доступ к группе
+            chat = await context.bot.get_chat(GROUP_ID)
+            logger.info(f"Группа: {chat.title} (ID: {chat.id})")
+            
+            # Проверяем, что это форум
+            if not hasattr(chat, 'is_forum') or not chat.is_forum:
+                logger.error("Группа не является форумом! Включите режим форума.")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Ошибка доступа к группе: {e}")
+            return None
+
         # Создаем тему
         topic = await context.bot.create_forum_topic(
             chat_id=GROUP_ID,
@@ -380,10 +404,12 @@ async def create_request_topic(update: Update, context: ContextTypes.DEFAULT_TYP
             parse_mode=ParseMode.HTML
         )
 
+        logger.info(f"✅ Тема {topic_id} создана успешно")
         return topic_id
 
     except Exception as e:
         logger.error(f"Ошибка создания темы: {e}")
+        logger.error(f"GROUP_ID: {GROUP_ID}")
         return None
 
 # ============ ОСТАЛЬНЫЕ КОМАНДЫ ============
@@ -572,7 +598,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.edit_message_text("❌ Нет прав.")
                 return
             
-            # Очищаем старые данные и устанавливаем состояние
+            if GROUP_ID == 0:
+                await query.edit_message_text(
+                    "❌ GROUP_ID не настроен! Обратитесь к администратору."
+                )
+                return
+            
             context.user_data['request_state'] = 'SCREENSHOT'
             context.user_data['request_data'] = {}
             
@@ -603,7 +634,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             await query.edit_message_text(
                 "🔍 <b>Поиск тем</b>\n\n"
-                "Используйте команду:\n/search <ключевое_слово>",
+                "Используйте команду:\n/search <ключевое слово>\n\n"
+                "Пример: /search канал",
                 parse_mode=ParseMode.HTML
             )
 
@@ -628,7 +660,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             await query.edit_message_text(
                 "🔒 <b>Закрытие темы</b>\n\n"
-                "Используйте команду:\n/close_topic <id_темы>",
+                "Используйте команду:\n/close_topic <id_темы>\n\n"
+                "ID темы можно найти через /search",
                 parse_mode=ParseMode.HTML
             )
 
@@ -700,7 +733,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
         elif data == "skip":
-            # Пропуск условий
             request_data = context.user_data.get('request_data', {})
             request_data['conditions'] = "Не указаны"
             context.user_data['request_data'] = request_data
@@ -717,7 +749,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await finish_request(fake_update, context)
 
         elif data == "cancel":
-            # Отмена создания запроса
             context.user_data.pop('request_state', None)
             context.user_data.pop('request_data', None)
             await query.edit_message_text("❌ Операция отменена.")
