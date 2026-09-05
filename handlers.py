@@ -51,59 +51,107 @@ async def get_user_name(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> str
     except:
         return str(user_id)
 
-# ============ ПОИСК ПОЛЬЗОВАТЕЛЯ ПО USERNAME ============
+# ============ РАБОТА С ТЕМАМИ ============
 
-async def find_user_by_username(context: ContextTypes.DEFAULT_TYPE, username: str) -> Optional[int]:
-    """Ищет пользователя по username среди всех, кто взаимодействовал с ботом"""
-    username = username.lower().replace('@', '')
-    
-    # 1. Пробуем найти через get_chat (если пользователь писал боту)
+async def get_active_topics(context: ContextTypes.DEFAULT_TYPE) -> list:
+    """Получает список всех активных тем в группе"""
+    active_topics = []
     try:
-        chat = await context.bot.get_chat(f"@{username}")
-        logger.info(f"Найден пользователь через get_chat: {chat.full_name} (ID: {chat.id})")
-        return chat.id
+        # Получаем все темы через get_forum_topics
+        # В версии python-telegram-bot 20.7 нет прямого метода для получения всех тем
+        # Поэтому используем сохранённые в БД
+        for topic_id, data in db.topics.items():
+            if data.is_active:
+                active_topics.append((topic_id, data))
+        return active_topics
     except Exception as e:
-        logger.debug(f"get_chat не сработал: {e}")
+        logger.error(f"Ошибка получения активных тем: {e}")
+        return []
+
+async def close_topic_with_kick(update: Update, context: ContextTypes.DEFAULT_TYPE, topic_id: int):
+    """Закрывает тему и удаляет из неё всех пользователей, кроме админов"""
+    user_id = update.effective_user.id
     
-    # 2. Проверяем PR менеджеров
-    for uid in db.pr_managers:
-        try:
-            chat = await context.bot.get_chat(uid)
-            if chat.username and chat.username.lower() == username:
-                logger.info(f"Найден PR Manager: {chat.full_name} (ID: {uid})")
-                return uid
-        except:
-            pass
+    if not is_admin(user_id) and not is_creator(user_id):
+        await update.message.reply_text("❌ Нет прав.")
+        return False
     
-    # 3. Проверяем Dep.Chief
-    for uid in db.dep_chiefs:
-        try:
-            chat = await context.bot.get_chat(uid)
-            if chat.username and chat.username.lower() == username:
-                logger.info(f"Найден Dep.Chief: {chat.full_name} (ID: {uid})")
-                return uid
-        except:
-            pass
+    if topic_id not in db.topics:
+        await update.message.reply_text("❌ Тема не найдена.")
+        return False
     
-    # 4. Проверяем Chief
+    if not db.topics[topic_id].is_active:
+        await update.message.reply_text("❌ Тема уже закрыта.")
+        return False
+    
+    # Закрываем тему в БД
+    db.close_topic(topic_id, user_id)
+    
     try:
-        chat = await context.bot.get_chat(CHIEF_ID)
-        if chat.username and chat.username.lower() == username:
-            logger.info(f"Найден Chief: {chat.full_name}")
-            return CHIEF_ID
-    except:
-        pass
-    
-    # 5. Проверяем Creator
-    try:
-        chat = await context.bot.get_chat(CREATOR_ID)
-        if chat.username and chat.username.lower() == username:
-            logger.info(f"Найден Creator: {chat.full_name}")
-            return CREATOR_ID
-    except:
-        pass
-    
-    return None
+        # Отправляем сообщение о закрытии в тему
+        await context.bot.send_message(
+            chat_id=GROUP_ID,
+            message_thread_id=topic_id,
+            text="🔒 Тема закрыта администратором."
+        )
+        
+        # Получаем всех участников темы (админов и обычных пользователей)
+        # В Telegram Bot API нет прямого метода для получения участников темы
+        # Поэтому мы используем другой подход:
+        # 1. Получаем всех администраторов группы
+        admins = await context.bot.get_chat_administrators(GROUP_ID)
+        admin_ids = [admin.user.id for admin in admins]
+        
+        # 2. Запрещаем отправку сообщений в теме для всех
+        await context.bot.set_forum_topic_permissions(
+            chat_id=GROUP_ID,
+            message_thread_id=topic_id,
+            permissions={
+                "can_send_messages": False,
+                "can_send_media_messages": False,
+                "can_send_polls": False,
+                "can_send_other_messages": False,
+                "can_add_web_page_previews": False,
+                "can_change_info": False,
+                "can_invite_users": False,
+                "can_pin_messages": False
+            }
+        )
+        
+        # 3. Разрешаем отправку сообщений только админам
+        for admin in admins:
+            try:
+                await context.bot.set_forum_topic_permissions(
+                    chat_id=GROUP_ID,
+                    message_thread_id=topic_id,
+                    user_id=admin.user.id,
+                    permissions={
+                        "can_send_messages": True,
+                        "can_send_media_messages": True,
+                        "can_send_polls": True,
+                        "can_send_other_messages": True,
+                        "can_add_web_page_previews": True,
+                        "can_change_info": True,
+                        "can_invite_users": True,
+                        "can_pin_messages": True
+                    }
+                )
+            except Exception as e:
+                logger.error(f"Ошибка установки прав для админа {admin.user.id}: {e}")
+        
+        # 4. Отправляем уведомление о том, что тема закрыта и доступна только для админов
+        await context.bot.send_message(
+            chat_id=GROUP_ID,
+            message_thread_id=topic_id,
+            text="🔒 Тема закрыта. Доступна только для администраторов."
+        )
+        
+        logger.info(f"✅ Тема {topic_id} закрыта и скрыта от обычных пользователей")
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка закрытия темы: {e}")
+        return False
 
 # ============ REPLY КЛАВИАТУРЫ ============
 
@@ -191,6 +239,22 @@ def get_back_to_main_inline_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🔙 Главное меню", callback_data="back_to_main")]
     ])
+
+def get_close_topic_inline_keyboard(active_topics: list) -> InlineKeyboardMarkup:
+    """Клавиатура со списком активных тем для закрытия"""
+    keyboard = []
+    if not active_topics:
+        keyboard.append([InlineKeyboardButton("📭 Нет активных тем", callback_data="no_topics")])
+    else:
+        for topic_id, data in active_topics:
+            keyboard.append([
+                InlineKeyboardButton(
+                    f"🔴 {data.channel_name} ({data.subscribers})",
+                    callback_data=f"close_topic_select_{topic_id}"
+                )
+            ])
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="admin_panel")])
+    return InlineKeyboardMarkup(keyboard)
 
 # ============ КОМАНДА /start ============
 
@@ -294,7 +358,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await search_topics_prompt(update, context)
             return
         elif text == "🔒 Закрыть тему":
-            await close_topic_prompt(update, context)
+            await show_close_topics(update, context)
             return
         elif text == "📊 Статистика":
             await statistics(update, context)
@@ -800,6 +864,70 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=keyboard
     )
 
+# ============ ЗАКРЫТИЕ ТЕМЫ (СПИСОК АКТИВНЫХ ТЕМ) ============
+
+async def show_close_topics(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает список активных тем для закрытия"""
+    user_id = update.effective_user.id
+    
+    if not is_admin(user_id) and not is_creator(user_id):
+        await update.message.reply_text("❌ Нет прав.")
+        return
+    
+    # Получаем активные темы
+    active_topics = []
+    for topic_id, data in db.topics.items():
+        if data.is_active:
+            active_topics.append((topic_id, data))
+    
+    if not active_topics:
+        keyboard = [
+            [InlineKeyboardButton("📭 Нет активных тем", callback_data="no_topics")],
+            [InlineKeyboardButton("🔙 Назад", callback_data="admin_panel")]
+        ]
+        await update.message.reply_text(
+            "📭 Нет активных тем для закрытия.",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return
+    
+    text = "🔒 <b>Выберите тему для закрытия:</b>\n\n"
+    for topic_id, data in active_topics:
+        text += f"• ID: <code>{topic_id}</code> | {sanitize_text(data.channel_name)} ({data.subscribers})\n"
+    
+    await update.message.reply_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_close_topic_inline_keyboard(active_topics)
+    )
+
+async def close_topic_select(update: Update, context: ContextTypes.DEFAULT_TYPE, topic_id: int):
+    """Закрывает выбранную тему"""
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    if not is_admin(user_id) and not is_creator(user_id):
+        await query.edit_message_text("❌ Нет прав.")
+        return
+    
+    if topic_id not in db.topics:
+        await query.edit_message_text("❌ Тема не найдена.")
+        return
+    
+    if not db.topics[topic_id].is_active:
+        await query.edit_message_text("❌ Тема уже закрыта.")
+        return
+    
+    # Закрываем тему
+    success = await close_topic_with_kick(update, context, topic_id)
+    
+    if success:
+        await query.edit_message_text(f"✅ Тема {topic_id} успешно закрыта.")
+    else:
+        await query.edit_message_text("❌ Ошибка при закрытии темы.")
+
+# ============ СТАТИСТИКА ============
+
 async def statistics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
@@ -906,128 +1034,85 @@ async def add_user_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not role:
         return
     
-    # Если нажали отмену
     if text == "❌ Отмена":
         await cancel_operation(update, context)
         return
     
-    # Пытаемся получить ID пользователя
     new_user_id = None
     found_user_info = None
     
-    # Убираем @ если есть
     username = text.replace('@', '').strip()
     
-    # Сначала пробуем как ID (если введены только цифры)
     if username.isdigit():
         new_user_id = int(username)
-        logger.info(f"Пользователь введён как ID: {new_user_id}")
         try:
             chat = await context.bot.get_chat(new_user_id)
             found_user_info = chat
-            logger.info(f"Найден пользователь по ID: {chat.full_name}")
         except:
             pass
     else:
-        # 1. Пробуем найти через get_chat (если пользователь писал боту)
         try:
-            logger.info(f"Пробуем найти @{username} через get_chat...")
             chat = await context.bot.get_chat(f"@{username}")
             new_user_id = chat.id
             found_user_info = chat
-            logger.info(f"Найден пользователь через get_chat: {chat.full_name} (ID: {chat.id})")
-        except Exception as e:
-            logger.debug(f"get_chat не сработал: {e}")
-        
-        # 2. Проверяем PR менеджеров
-        if not new_user_id:
-            logger.info(f"Ищем @{username} среди PR менеджеров...")
+        except:
             for uid in db.pr_managers:
                 try:
                     chat = await context.bot.get_chat(uid)
                     if chat.username and chat.username.lower() == username:
                         new_user_id = uid
                         found_user_info = chat
-                        logger.info(f"Найден PR Manager: {chat.full_name} (ID: {uid})")
                         break
                 except:
                     pass
         
-        # 3. Проверяем Dep.Chief
         if not new_user_id:
-            logger.info(f"Ищем @{username} среди Dep.Chief...")
             for uid in db.dep_chiefs:
                 try:
                     chat = await context.bot.get_chat(uid)
                     if chat.username and chat.username.lower() == username:
                         new_user_id = uid
                         found_user_info = chat
-                        logger.info(f"Найден Dep.Chief: {chat.full_name} (ID: {uid})")
                         break
                 except:
                     pass
         
-        # 4. Проверяем Chief
         if not new_user_id:
             try:
                 chat = await context.bot.get_chat(CHIEF_ID)
                 if chat.username and chat.username.lower() == username:
                     new_user_id = CHIEF_ID
                     found_user_info = chat
-                    logger.info(f"Найден Chief: {chat.full_name}")
             except:
                 pass
         
-        # 5. Проверяем Creator
         if not new_user_id:
             try:
                 chat = await context.bot.get_chat(CREATOR_ID)
                 if chat.username and chat.username.lower() == username:
                     new_user_id = CREATOR_ID
                     found_user_info = chat
-                    logger.info(f"Найден Creator: {chat.full_name}")
             except:
                 pass
     
     if not new_user_id:
         await update.message.reply_text(
             "❌ Не удалось найти пользователя.\n\n"
-            "Проверьте, что:\n"
-            "1. Username введён корректно (например, @john)\n"
-            "2. У пользователя есть публичный username\n"
-            "3. Пользователь написал боту /start\n\n"
             "💡 <b>Совет:</b>\n"
-            "1. Попросите пользователя ещё раз написать боту: /start\n"
-            "2. После этого попробуйте снова\n"
-            "3. Или используйте ID пользователя (цифры)\n\n"
+            "1. Попросите пользователя написать боту: /start\n"
+            "2. Или используйте ID пользователя (цифры)\n\n"
             "Или нажмите 'Отмена'.",
             parse_mode=ParseMode.HTML,
             reply_markup=get_cancel_reply_keyboard()
         )
         return
     
-    # Проверяем, что пользователь не является Chief или Creator
     if new_user_id == CHIEF_ID:
-        await update.message.reply_text("❌ Это Chief PR Manager. Его нельзя добавить повторно.")
+        await update.message.reply_text("❌ Это Chief PR Manager.")
         return
     if new_user_id == CREATOR_ID:
-        await update.message.reply_text("❌ Это Создатель. Его нельзя добавить повторно.")
+        await update.message.reply_text("❌ Это Создатель.")
         return
-    
-    # Показываем информацию о найденном пользователе
-    user_info_text = str(new_user_id)
-    if found_user_info:
-        if found_user_info.username:
-            user_info_text = f"@{found_user_info.username}"
-        elif found_user_info.full_name:
-            user_info_text = found_user_info.full_name
-    
-    await update.message.reply_text(
-        f"🔍 Найден пользователь: <b>{user_info_text}</b>\n"
-        f"🆔 ID: <code>{new_user_id}</code>\n\n"
-        f"Добавляем...",
-        parse_mode=ParseMode.HTML
-    )
     
     success = False
     
@@ -1045,8 +1130,7 @@ async def add_user_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if is_creator(user_id) or is_chief(user_id):
             success = db.add_pr_manager(new_user_id)
             await update.message.reply_text(
-                f"✅ Пользователь {new_user_id} добавлен как PR Manager.\n"
-                f"⚠️ Функция смены Chief в разработке."
+                f"✅ Пользователь {new_user_id} добавлен как PR Manager."
             )
         else:
             await update.message.reply_text("❌ Нет прав для добавления Chief.")
@@ -1074,18 +1158,15 @@ async def add_user_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 chat_id=new_user_id,
                 text=f"🎉 Вас добавили в систему PR Manager бота!\n\nВаша роль: {role.upper()}\nИспользуйте /start для начала работы."
             )
-        except Exception as e:
-            logger.warning(f"Не удалось отправить уведомление пользователю {new_user_id}: {e}")
+        except:
+            pass
         
         keyboard = get_manage_users_reply_keyboard(
             is_creator=is_creator(user_id),
             is_chief=is_chief(user_id),
             is_dep_chief=is_dep_chief(user_id)
         )
-        await update.message.reply_text(
-            "✅ Операция завершена.",
-            reply_markup=keyboard
-        )
+        await update.message.reply_text("✅ Операция завершена.", reply_markup=keyboard)
     
     context.user_data.pop('add_role', None)
     context.user_data.pop('add_state', None)
@@ -1145,10 +1226,7 @@ async def remove_user_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE
         is_chief=is_chief(user_id),
         is_dep_chief=is_dep_chief(user_id)
     )
-    await update.message.reply_text(
-        "✅ Операция завершена.",
-        reply_markup=keyboard
-    )
+    await update.message.reply_text("✅ Операция завершена.", reply_markup=keyboard)
     
     context.user_data.pop('remove_state', None)
 
@@ -1176,11 +1254,9 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text += f"• <a href='tg://user?id={uid}'>{name}</a>\n"
         text += "\n"
 
-    # Chief
     chief_name = await get_user_name(context, CHIEF_ID)
     text += f"👑 <b>Chief PR Manager:</b>\n• <a href='tg://user?id={CHIEF_ID}'>{chief_name}</a>\n\n"
 
-    # Creator
     creator_name = await get_user_name(context, CREATOR_ID)
     text += f"👑 <b>Creator:</b>\n• <a href='tg://user?id={CREATOR_ID}'>{creator_name}</a>"
 
@@ -1196,7 +1272,7 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=keyboard
     )
 
-# ============ ПОИСК И ЗАКРЫТИЕ ТЕМ ============
+# ============ ПОИСК ТЕМ ============
 
 async def search_topics_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -1256,118 +1332,6 @@ async def search_topics_confirm(update: Update, context: ContextTypes.DEFAULT_TY
         reply_markup=keyboard
     )
 
-async def close_topic_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if not is_admin(user_id) and not is_creator(user_id):
-        await update.message.reply_text("❌ Нет прав.")
-        return
-    
-    context.user_data['close_state'] = 'WAITING_TOPIC_ID'
-    
-    await update.message.reply_text(
-        "🔒 <b>Закрытие темы</b>\n\n"
-        "Введите ID темы, которую хотите закрыть:\n\n"
-        "ID темы можно найти через поиск.\n\n"
-        "Для отмены нажмите 'Отмена'.",
-        parse_mode=ParseMode.HTML,
-        reply_markup=get_cancel_reply_keyboard()
-    )
-
-async def close_topic_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    text = update.message.text.strip()
-    
-    if text == "❌ Отмена":
-        await cancel_operation(update, context)
-        return
-    
-    try:
-        topic_id = int(text)
-    except ValueError:
-        await update.message.reply_text(
-            "❌ Введите корректный ID (только цифры).",
-            reply_markup=get_cancel_reply_keyboard()
-        )
-        return
-    
-    if topic_id not in db.topics:
-        await update.message.reply_text(
-            "❌ Тема не найдена.",
-            reply_markup=get_admin_reply_keyboard()
-        )
-        context.user_data.pop('close_state', None)
-        return
-    
-    if not db.topics[topic_id].is_active:
-        await update.message.reply_text(
-            "❌ Тема уже закрыта.",
-            reply_markup=get_admin_reply_keyboard()
-        )
-        context.user_data.pop('close_state', None)
-        return
-
-    db.close_topic(topic_id, user_id)
-    
-    await context.bot.send_message(
-        chat_id=GROUP_ID,
-        message_thread_id=topic_id,
-        text="🔒 Тема закрыта администратором."
-    )
-    
-    keyboard = get_admin_reply_keyboard()
-    context.user_data.pop('close_state', None)
-    
-    await update.message.reply_text(
-        f"✅ Тема {topic_id} закрыта.",
-        reply_markup=keyboard
-    )
-
-# ============ НАЗАД И ОТМЕНА ============
-
-async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    user = update.effective_user
-    
-    # Сбрасываем все состояния
-    context.user_data.pop('add_state', None)
-    context.user_data.pop('remove_state', None)
-    context.user_data.pop('search_state', None)
-    context.user_data.pop('close_state', None)
-    context.user_data.pop('add_role', None)
-    
-    text = f"👋 <b>Главное меню, {sanitize_text(user.full_name)}!</b>\n\nВыберите действие:"
-    
-    keyboard = get_main_reply_keyboard(
-        is_admin=is_admin(user_id),
-        is_creator=is_creator(user_id)
-    )
-    
-    await update.message.reply_text(
-        text,
-        parse_mode=ParseMode.HTML,
-        reply_markup=keyboard
-    )
-
-async def cancel_operation(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    
-    # Сбрасываем ВСЕ состояния
-    context.user_data.pop('request_state', None)
-    context.user_data.pop('request_data', None)
-    context.user_data.pop('add_role', None)
-    context.user_data.pop('add_state', None)
-    context.user_data.pop('remove_state', None)
-    context.user_data.pop('search_state', None)
-    context.user_data.pop('close_state', None)
-    
-    await update.message.reply_text(
-        "❌ Операция отменена.",
-        reply_markup=get_main_reply_keyboard(
-            is_admin=is_admin(user_id),
-            is_creator=is_creator(user_id)
-        )
-    )
-
 # ============ ОБРАБОТЧИК КНОПОК (INLINE) ============
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1388,6 +1352,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await goto_topic(update, context, topic_id)
             return
 
+        if data.startswith("close_topic_select_"):
+            topic_id = int(data.split("_")[3])
+            await close_topic_select(update, context, topic_id)
+            return
+
         if data.startswith("close_topic_"):
             topic_id = int(data.split("_")[2])
             if not is_admin(user_id) and not is_creator(user_id):
@@ -1402,25 +1371,15 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.edit_message_text("❌ Тема уже закрыта.")
                 return
             
-            db.close_topic(topic_id, user_id)
-            
-            await context.bot.send_message(
-                chat_id=GROUP_ID,
-                message_thread_id=topic_id,
-                text="🔒 Тема закрыта администратором."
-            )
-            
-            keyboard = get_back_to_main_inline_keyboard()
-            await query.edit_message_text(
-                f"✅ Тема {topic_id} закрыта.",
-                reply_markup=keyboard
-            )
+            await close_topic_select(update, context, topic_id)
+            return
+
+        elif data == "no_topics":
+            await query.edit_message_text("📭 Нет активных тем для закрытия.")
             return
 
         elif data == "back_to_main":
             user = query.from_user
-            
-            # Сбрасываем все состояния
             context.user_data.pop('add_state', None)
             context.user_data.pop('remove_state', None)
             context.user_data.pop('search_state', None)
@@ -1433,6 +1392,27 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 is_admin=is_admin(user_id),
                 is_creator=is_creator(user_id)
             )
+            
+            await query.edit_message_text(
+                text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=keyboard
+            )
+            return
+
+        elif data == "admin_panel":
+            if not is_admin(user_id) and not is_creator(user_id):
+                await query.edit_message_text("❌ Нет прав.")
+                return
+            
+            text = (
+                "⚙️ <b>Админ-панель</b>\n\n"
+                "Управление ботом и пользователями.\n"
+                f"👤 Ваша роль: "
+                f"{'Создатель' if is_creator(user_id) else 'Chief' if is_chief(user_id) else 'Dep.Chief'}"
+            )
+            
+            keyboard = get_admin_reply_keyboard()
             
             await query.edit_message_text(
                 text,
@@ -1491,6 +1471,50 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("❌ Ошибка. Попробуйте позже.")
         except:
             pass
+
+# ============ НАЗАД И ОТМЕНА ============
+
+async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user = update.effective_user
+    
+    context.user_data.pop('add_state', None)
+    context.user_data.pop('remove_state', None)
+    context.user_data.pop('search_state', None)
+    context.user_data.pop('close_state', None)
+    context.user_data.pop('add_role', None)
+    
+    text = f"👋 <b>Главное меню, {sanitize_text(user.full_name)}!</b>\n\nВыберите действие:"
+    
+    keyboard = get_main_reply_keyboard(
+        is_admin=is_admin(user_id),
+        is_creator=is_creator(user_id)
+    )
+    
+    await update.message.reply_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=keyboard
+    )
+
+async def cancel_operation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
+    context.user_data.pop('request_state', None)
+    context.user_data.pop('request_data', None)
+    context.user_data.pop('add_role', None)
+    context.user_data.pop('add_state', None)
+    context.user_data.pop('remove_state', None)
+    context.user_data.pop('search_state', None)
+    context.user_data.pop('close_state', None)
+    
+    await update.message.reply_text(
+        "❌ Операция отменена.",
+        reply_markup=get_main_reply_keyboard(
+            is_admin=is_admin(user_id),
+            is_creator=is_creator(user_id)
+        )
+    )
 
 # ============ ОБРАБОТЧИК ОШИБОК ============
 
