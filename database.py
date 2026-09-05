@@ -10,11 +10,8 @@ from config import DATABASE_URL
 
 logger = logging.getLogger(__name__)
 
-# ============ МОДЕЛЬ ДАННЫХ ============
-
 @dataclass
 class RequestData:
-    """Модель данных запроса (темы)"""
     screenshot: str
     media_link: str
     channel_name: str
@@ -35,11 +32,7 @@ class RequestData:
         return cls(**data)
 
 
-# ============ КЛАСС БАЗЫ ДАННЫХ (PostgreSQL) ============
-
 class Database:
-    """Класс для работы с PostgreSQL базой данных"""
-    
     def __init__(self, database_url: str = None):
         if database_url is None:
             database_url = DATABASE_URL
@@ -47,17 +40,13 @@ class Database:
         self.database_url = database_url
         self.conn = None
         self.cursor = None
-        
-        # Временные данные (не сохраняются в БД)
         self.pending_requests: Dict[int, dict] = {}
         
-        # Подключаемся к БД и создаём таблицы
         self._connect()
         self._create_tables()
         logger.info(f"✅ PostgreSQL база данных инициализирована")
     
     def _connect(self):
-        """Подключение к базе данных"""
         try:
             self.conn = psycopg2.connect(self.database_url)
             self.conn.autocommit = False
@@ -68,9 +57,7 @@ class Database:
             raise
     
     def _create_tables(self):
-        """Создание всех таблиц"""
         try:
-            # Таблица пользователей
             self.cursor.execute('''
                 CREATE TABLE IF NOT EXISTS users (
                     user_id BIGINT PRIMARY KEY,
@@ -81,7 +68,6 @@ class Database:
                 )
             ''')
             
-            # Таблица тем (запросов)
             self.cursor.execute('''
                 CREATE TABLE IF NOT EXISTS topics (
                     topic_id BIGINT PRIMARY KEY,
@@ -95,12 +81,10 @@ class Database:
                     created_at TIMESTAMP NOT NULL,
                     is_active BOOLEAN DEFAULT TRUE,
                     closed_by BIGINT,
-                    closed_at TIMESTAMP,
-                    FOREIGN KEY (user_id) REFERENCES users (user_id)
+                    closed_at TIMESTAMP
                 )
             ''')
             
-            # Таблица связи пользователей с темами
             self.cursor.execute('''
                 CREATE TABLE IF NOT EXISTS user_topics (
                     user_id BIGINT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
@@ -109,7 +93,6 @@ class Database:
                 )
             ''')
             
-            # Индексы для быстрого поиска
             self.cursor.execute('CREATE INDEX IF NOT EXISTS idx_topics_channel ON topics(channel_name)')
             self.cursor.execute('CREATE INDEX IF NOT EXISTS idx_topics_active ON topics(is_active)')
             self.cursor.execute('CREATE INDEX IF NOT EXISTS idx_topics_user ON topics(user_id)')
@@ -125,7 +108,6 @@ class Database:
             raise
     
     def _execute(self, query: str, params: tuple = ()):
-        """Выполнение запроса с автоматическим коммитом"""
         try:
             self.cursor.execute(query, params)
             self.conn.commit()
@@ -136,21 +118,16 @@ class Database:
             raise
     
     def _fetch_one(self, query: str, params: tuple = ()) -> Optional[dict]:
-        """Получение одной записи"""
         self.cursor.execute(query, params)
         row = self.cursor.fetchone()
         return dict(row) if row else None
     
     def _fetch_all(self, query: str, params: tuple = ()) -> List[dict]:
-        """Получение всех записей"""
         self.cursor.execute(query, params)
         rows = self.cursor.fetchall()
         return [dict(row) for row in rows]
     
-    # ============ УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ ============
-    
     def add_user(self, user_id: int, username: str = None, full_name: str = None, role: str = 'pr') -> bool:
-        """Добавление пользователя"""
         try:
             self._execute('''
                 INSERT INTO users (user_id, username, full_name, role)
@@ -166,23 +143,18 @@ class Database:
             return False
     
     def get_user(self, user_id: int) -> Optional[dict]:
-        """Получение информации о пользователе"""
         return self._fetch_one('SELECT * FROM users WHERE user_id = %s', (user_id,))
     
     def add_pr_manager(self, user_id: int) -> bool:
-        """Добавление PR менеджера"""
         return self.add_user(user_id, role='pr')
     
     def add_dep_chief(self, user_id: int) -> bool:
-        """Добавление Dep.Chief (автоматически становится PR)"""
         return self.add_user(user_id, role='dep_chief')
     
     def add_chief(self, user_id: int) -> bool:
-        """Добавление Chief (только для Creator)"""
         return self.add_user(user_id, role='chief')
     
     def remove_user(self, user_id: int) -> bool:
-        """Удаление пользователя"""
         try:
             self._execute('DELETE FROM users WHERE user_id = %s', (user_id,))
             return True
@@ -191,21 +163,17 @@ class Database:
             return False
     
     def get_all_users(self) -> List[dict]:
-        """Получение всех пользователей"""
         return self._fetch_all('SELECT * FROM users ORDER BY role, user_id')
     
     def get_pr_managers(self) -> List[int]:
-        """Получение ID всех PR менеджеров"""
         rows = self._fetch_all("SELECT user_id FROM users WHERE role IN ('pr', 'dep_chief')")
         return [row['user_id'] for row in rows]
     
     def get_dep_chiefs(self) -> List[int]:
-        """Получение ID всех Dep.Chief"""
         rows = self._fetch_all("SELECT user_id FROM users WHERE role = 'dep_chief'")
         return [row['user_id'] for row in rows]
     
     def is_pr_manager(self, user_id: int) -> bool:
-        """Проверка, является ли пользователь PR менеджером"""
         row = self._fetch_one(
             "SELECT user_id FROM users WHERE user_id = %s AND role IN ('pr', 'dep_chief')",
             (user_id,)
@@ -213,7 +181,6 @@ class Database:
         return row is not None
     
     def is_dep_chief(self, user_id: int) -> bool:
-        """Проверка, является ли пользователь Dep.Chief"""
         row = self._fetch_one(
             "SELECT user_id FROM users WHERE user_id = %s AND role = 'dep_chief'",
             (user_id,)
@@ -221,22 +188,16 @@ class Database:
         return row is not None
     
     def is_chief(self, user_id: int) -> bool:
-        """Проверка, является ли пользователь Chief"""
         row = self._fetch_one(
             "SELECT user_id FROM users WHERE user_id = %s AND role = 'chief'",
             (user_id,)
         )
         return row is not None
     
-    # ============ УПРАВЛЕНИЕ ТЕМАМИ ============
-    
     def add_topic(self, topic_id: int, request_data: RequestData):
-        """Добавление новой темы"""
         try:
-            # Добавляем пользователя, если его нет
             self.add_user(request_data.user_id, role='pr')
             
-            # Добавляем тему
             self._execute('''
                 INSERT INTO topics (
                     topic_id, user_id, screenshot, media_link, channel_name,
@@ -255,7 +216,6 @@ class Database:
                 request_data.is_active
             ))
             
-            # Добавляем связь пользователь-тема
             self._execute('''
                 INSERT INTO user_topics (user_id, topic_id)
                 VALUES (%s, %s)
@@ -269,7 +229,6 @@ class Database:
             raise
     
     def close_topic(self, topic_id: int, closed_by: int) -> bool:
-        """Закрытие темы (архивация)"""
         try:
             self._execute('''
                 UPDATE topics 
@@ -285,7 +244,6 @@ class Database:
             return False
     
     def get_topic(self, topic_id: int) -> Optional[RequestData]:
-        """Получение темы по ID"""
         row = self._fetch_one('SELECT * FROM topics WHERE topic_id = %s', (topic_id,))
         if row:
             return RequestData(
@@ -304,7 +262,6 @@ class Database:
         return None
     
     def get_user_topics(self, user_id: int) -> List[int]:
-        """Получение списка ID тем пользователя"""
         rows = self._fetch_all('''
             SELECT t.topic_id FROM topics t
             JOIN user_topics ut ON t.topic_id = ut.topic_id
@@ -314,7 +271,6 @@ class Database:
         return [row['topic_id'] for row in rows]
     
     def get_active_topics(self) -> List[Tuple[int, RequestData]]:
-        """Получение всех активных тем"""
         rows = self._fetch_all('''
             SELECT * FROM topics WHERE is_active = TRUE ORDER BY created_at DESC
         ''')
@@ -339,7 +295,6 @@ class Database:
         return result
     
     def get_closed_topics(self) -> List[Tuple[int, RequestData]]:
-        """Получение всех закрытых тем (архив)"""
         rows = self._fetch_all('''
             SELECT * FROM topics WHERE is_active = FALSE ORDER BY closed_at DESC
         ''')
@@ -364,7 +319,6 @@ class Database:
         return result
     
     def search_topics(self, keyword: str, include_archived: bool = False) -> List[Tuple[int, RequestData]]:
-        """Поиск тем по ключевому слову"""
         keyword = f"%{keyword}%"
         
         query = '''
@@ -400,7 +354,6 @@ class Database:
         return result
     
     def get_statistics(self) -> dict:
-        """Получение статистики"""
         stats = self._fetch_one('''
             SELECT 
                 COUNT(*) as total_topics,
@@ -420,8 +373,6 @@ class Database:
             'dep_chief_count': 0
         }
     
-    # ============ ВРЕМЕННЫЕ ДАННЫЕ ============
-    
     def get_pending_request(self, user_id: int) -> Optional[dict]:
         return self.pending_requests.get(user_id)
     
@@ -431,10 +382,7 @@ class Database:
     def clear_pending_request(self, user_id: int):
         self.pending_requests.pop(user_id, None)
     
-    # ============ ЗАКРЫТИЕ СОЕДИНЕНИЯ ============
-    
     def close(self):
-        """Закрытие соединения с БД"""
         if self.cursor:
             self.cursor.close()
         if self.conn:
