@@ -39,41 +39,13 @@ def is_creator(user_id: int) -> bool:
 # ============ КЛАВИАТУРЫ ============
 
 def get_main_keyboard(is_admin: bool = False, is_creator: bool = False) -> InlineKeyboardMarkup:
+    """Главное меню"""
     keyboard = [
         [InlineKeyboardButton("📝 Создать запрос", callback_data="new_request")],
         [InlineKeyboardButton("📋 Мои запросы", callback_data="my_requests")],
     ]
     if is_admin or is_creator:
         keyboard.append([InlineKeyboardButton("⚙️ Админ-панель", callback_data="admin_panel")])
-    return InlineKeyboardMarkup(keyboard)
-
-def get_admin_panel_keyboard(is_creator: bool = False, is_chief: bool = False, is_dep_chief: bool = False) -> InlineKeyboardMarkup:
-    keyboard = []
-    keyboard.append([InlineKeyboardButton("👥 Управление пользователями", callback_data="manage_users")])
-    keyboard.append([InlineKeyboardButton("🔍 Поиск тем", callback_data="search")])
-    keyboard.append([InlineKeyboardButton("🔒 Закрыть тему", callback_data="close_topic")])
-    keyboard.append([InlineKeyboardButton("📊 Статистика", callback_data="statistics")])
-    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")])
-    return InlineKeyboardMarkup(keyboard)
-
-def get_manage_users_keyboard(is_creator: bool = False, is_chief: bool = False, is_dep_chief: bool = False) -> InlineKeyboardMarkup:
-    keyboard = []
-    
-    if is_creator:
-        keyboard.append([InlineKeyboardButton("➕ Добавить Создателя", callback_data="add_creator")])
-        keyboard.append([InlineKeyboardButton("➕ Добавить Chief", callback_data="add_chief")])
-        keyboard.append([InlineKeyboardButton("➕ Добавить Dep.Chief", callback_data="add_dep")])
-        keyboard.append([InlineKeyboardButton("➕ Добавить PR", callback_data="add_pr")])
-    elif is_chief:
-        keyboard.append([InlineKeyboardButton("➕ Добавить Chief", callback_data="add_chief")])
-        keyboard.append([InlineKeyboardButton("➕ Добавить Dep.Chief", callback_data="add_dep")])
-        keyboard.append([InlineKeyboardButton("➕ Добавить PR", callback_data="add_pr")])
-    elif is_dep_chief:
-        keyboard.append([InlineKeyboardButton("➕ Добавить PR", callback_data="add_pr")])
-    
-    keyboard.append([InlineKeyboardButton("➖ Удалить пользователя", callback_data="remove_user")])
-    keyboard.append([InlineKeyboardButton("📋 Список пользователей", callback_data="list_users")])
-    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="admin_panel")])
     return InlineKeyboardMarkup(keyboard)
 
 def get_cancel_keyboard() -> InlineKeyboardMarkup:
@@ -86,6 +58,7 @@ def get_skip_keyboard() -> InlineKeyboardMarkup:
     ])
 
 def get_my_requests_keyboard(topics: list) -> InlineKeyboardMarkup:
+    """Клавиатура со списком запросов пользователя"""
     keyboard = []
     for topic_id, data in topics:
         status = "🟢" if data.is_active else "🔴"
@@ -99,6 +72,7 @@ def get_my_requests_keyboard(topics: list) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(keyboard)
 
 def get_topic_action_keyboard(topic_id: int, is_admin: bool = False) -> InlineKeyboardMarkup:
+    """Клавиатура для действий с темой"""
     keyboard = [
         [InlineKeyboardButton("📂 Перейти к теме", callback_data=f"goto_topic_{topic_id}")],
     ]
@@ -147,7 +121,10 @@ async def new_request_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if GROUP_ID == 0:
-        await update.message.reply_text("❌ GROUP_ID не настроен!")
+        await update.message.reply_text(
+            "❌ GROUP_ID не настроен!",
+            reply_markup=get_cancel_keyboard()
+        )
         return
 
     context.user_data['request_state'] = 'SCREENSHOT'
@@ -317,13 +294,13 @@ async def finish_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if missing:
         await update.message.reply_text(
             f"❌ Не хватает полей: {', '.join(missing)}\n"
-            "Начните заново с /new_request"
+            "Начните заново с /new_request",
+            reply_markup=get_cancel_keyboard()
         )
         context.user_data.pop('request_state', None)
         context.user_data.pop('request_data', None)
         return
 
-    # ОТПРАВКА ФОТО В ГРУППУ
     screenshot_url = request_data.get('screenshot')
     photo_sent = False
     
@@ -365,11 +342,18 @@ async def finish_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         db.add_topic(topic_id, request_obj)
 
+        keyboard = [
+            [InlineKeyboardButton("📋 Мои запросы", callback_data="my_requests")],
+            [InlineKeyboardButton("📝 Создать новый запрос", callback_data="new_request")],
+            [InlineKeyboardButton("🔙 Главное меню", callback_data="back_to_main")]
+        ]
+
         await update.message.reply_text(
             f"✅ <b>Запрос успешно создан!</b>\n\n"
             f"🆔 ID темы: <code>{topic_id}</code>\n"
             f"📌 Тема создана в группе и отмечена для руководства.",
-            parse_mode=ParseMode.HTML
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
     else:
         error_msg = "❌ Не удалось создать запрос. Проверьте:\n" \
@@ -377,7 +361,10 @@ async def finish_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "2. Что в группе включён режим форума\n" \
                     "3. Что у бота есть право 'Управление темами'\n" \
                     "4. Что GROUP_ID правильный (должен быть отрицательным!)"
-        await update.message.reply_text(error_msg)
+        await update.message.reply_text(
+            error_msg,
+            reply_markup=get_cancel_keyboard()
+        )
 
     context.user_data.pop('request_state', None)
     context.user_data.pop('request_data', None)
@@ -429,7 +416,6 @@ async def create_request_topic(update: Update, context: ContextTypes.DEFAULT_TYP
             disable_web_page_preview=True
         )
 
-        # === ТЕГИРУЕМ CHIEF ===
         try:
             await context.bot.send_message(
                 chat_id=GROUP_ID,
@@ -441,7 +427,6 @@ async def create_request_topic(update: Update, context: ContextTypes.DEFAULT_TYP
         except Exception as e:
             logger.error(f"❌ Ошибка тегирования Chief: {e}")
 
-        # === ТЕГИРУЕМ DEP.CHIEF ===
         for dep_id in db.dep_chiefs:
             try:
                 await context.bot.send_message(
@@ -454,7 +439,6 @@ async def create_request_topic(update: Update, context: ContextTypes.DEFAULT_TYP
             except Exception as e:
                 logger.error(f"❌ Ошибка тегирования Dep.Chief {dep_id}: {e}")
 
-        # === СКРЫВАЕМ ТЕМУ ОТ ОБЫЧНЫХ ПОЛЬЗОВАТЕЛЕЙ ===
         try:
             admins = await context.bot.get_chat_administrators(GROUP_ID)
             
@@ -511,7 +495,14 @@ async def my_requests(update: Update, context: ContextTypes.DEFAULT_TYPE):
     topics = db.get_user_topics(user_id)
 
     if not topics:
-        await update.message.reply_text("📋 У вас нет запросов.")
+        keyboard = [
+            [InlineKeyboardButton("📝 Создать запрос", callback_data="new_request")],
+            [InlineKeyboardButton("🔙 Главное меню", callback_data="back_to_main")]
+        ]
+        await update.message.reply_text(
+            "📋 У вас нет запросов.",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
         return
 
     topics_list = []
@@ -521,7 +512,14 @@ async def my_requests(update: Update, context: ContextTypes.DEFAULT_TYPE):
             topics_list.append((tid, data))
     
     if not topics_list:
-        await update.message.reply_text("📋 У вас нет запросов.")
+        keyboard = [
+            [InlineKeyboardButton("📝 Создать запрос", callback_data="new_request")],
+            [InlineKeyboardButton("🔙 Главное меню", callback_data="back_to_main")]
+        ]
+        await update.message.reply_text(
+            "📋 У вас нет запросов.",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
         return
 
     text = "📋 <b>Ваши запросы:</b>\n\n"
@@ -572,13 +570,19 @@ async def goto_topic(update: Update, context: ContextTypes.DEFAULT_TYPE, topic_i
     query = update.callback_query
     topic_link = f"https://t.me/c/{str(GROUP_ID)[4:]}/{topic_id}"
     
+    keyboard = [
+        [InlineKeyboardButton("🔙 Назад", callback_data="my_requests")],
+        [InlineKeyboardButton("🔙 Главное меню", callback_data="back_to_main")]
+    ]
+    
     await query.edit_message_text(
         f"🔗 <b>Переход к теме #{topic_id}</b>\n\n"
         f"Нажмите на ссылку ниже, чтобы открыть тему:\n"
         f"<a href='{topic_link}'>Открыть тему #{topic_id}</a>\n\n"
         f"Или скопируйте ссылку:\n<code>{topic_link}</code>",
         parse_mode=ParseMode.HTML,
-        disable_web_page_preview=True
+        disable_web_page_preview=True,
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 # ============ АДМИН-ПАНЕЛЬ ============
@@ -598,14 +602,18 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"{'Создатель' if is_creator(user_id) else 'Chief' if is_chief(user_id) else 'Dep.Chief'}"
     )
     
+    keyboard = [
+        [InlineKeyboardButton("👥 Управление пользователями", callback_data="manage_users")],
+        [InlineKeyboardButton("🔍 Поиск тем", callback_data="search")],
+        [InlineKeyboardButton("🔒 Закрыть тему", callback_data="close_topic")],
+        [InlineKeyboardButton("📊 Статистика", callback_data="statistics")],
+        [InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")]
+    ]
+    
     await query.edit_message_text(
         text,
         parse_mode=ParseMode.HTML,
-        reply_markup=get_admin_panel_keyboard(
-            is_creator=is_creator(user_id),
-            is_chief=is_chief(user_id),
-            is_dep_chief=is_dep_chief(user_id)
-        )
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 async def statistics(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -634,14 +642,14 @@ async def statistics(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"  • Файл: {db.file_path}"
     )
     
+    keyboard = [
+        [InlineKeyboardButton("🔙 Назад", callback_data="admin_panel")]
+    ]
+    
     await query.edit_message_text(
         text,
         parse_mode=ParseMode.HTML,
-        reply_markup=get_admin_panel_keyboard(
-            is_creator=is_creator(user_id),
-            is_chief=is_chief(user_id),
-            is_dep_chief=is_dep_chief(user_id)
-        )
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 # ============ УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ ============
@@ -662,14 +670,28 @@ async def manage_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📋 Всего пользователей: {len(db.pr_managers) + len(db.dep_chiefs) + 2}"
     )
     
+    keyboard = []
+    
+    if is_creator(user_id):
+        keyboard.append([InlineKeyboardButton("➕ Добавить Создателя", callback_data="add_creator")])
+        keyboard.append([InlineKeyboardButton("➕ Добавить Chief", callback_data="add_chief")])
+        keyboard.append([InlineKeyboardButton("➕ Добавить Dep.Chief", callback_data="add_dep")])
+        keyboard.append([InlineKeyboardButton("➕ Добавить PR", callback_data="add_pr")])
+    elif is_chief(user_id):
+        keyboard.append([InlineKeyboardButton("➕ Добавить Chief", callback_data="add_chief")])
+        keyboard.append([InlineKeyboardButton("➕ Добавить Dep.Chief", callback_data="add_dep")])
+        keyboard.append([InlineKeyboardButton("➕ Добавить PR", callback_data="add_pr")])
+    elif is_dep_chief(user_id):
+        keyboard.append([InlineKeyboardButton("➕ Добавить PR", callback_data="add_pr")])
+    
+    keyboard.append([InlineKeyboardButton("➖ Удалить пользователя", callback_data="remove_user")])
+    keyboard.append([InlineKeyboardButton("📋 Список пользователей", callback_data="list_users")])
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="admin_panel")])
+    
     await query.edit_message_text(
         text,
         parse_mode=ParseMode.HTML,
-        reply_markup=get_manage_users_keyboard(
-            is_creator=is_creator(user_id),
-            is_chief=is_chief(user_id),
-            is_dep_chief=is_dep_chief(user_id)
-        )
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 async def add_user_start(update: Update, context: ContextTypes.DEFAULT_TYPE, role: str):
@@ -722,7 +744,8 @@ async def add_user_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
             new_user_id = chat.id
         except:
             await update.message.reply_text(
-                "❌ Не удалось найти пользователя. Проверьте username или ID."
+                "❌ Не удалось найти пользователя. Проверьте username или ID.",
+                reply_markup=get_cancel_keyboard()
             )
             return
     
@@ -772,6 +795,15 @@ async def add_user_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except:
             pass
+        
+        keyboard = [
+            [InlineKeyboardButton("👥 Управление пользователями", callback_data="manage_users")],
+            [InlineKeyboardButton("🔙 Админ-панель", callback_data="admin_panel")]
+        ]
+        await update.message.reply_text(
+            "✅ Операция завершена.",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
     
     context.user_data.pop('add_role', None)
     context.user_data.pop('add_state', None)
@@ -802,7 +834,10 @@ async def remove_user_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE
     try:
         remove_id = int(text)
     except ValueError:
-        await update.message.reply_text("❌ Введите корректный ID (только цифры).")
+        await update.message.reply_text(
+            "❌ Введите корректный ID (только цифры).",
+            reply_markup=get_cancel_keyboard()
+        )
         return
     
     if remove_id == CHIEF_ID:
@@ -818,6 +853,15 @@ async def remove_user_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(f"✅ Пользователь {remove_id} удалён.")
     else:
         await update.message.reply_text("❌ Пользователь не найден.")
+    
+    keyboard = [
+        [InlineKeyboardButton("👥 Управление пользователями", callback_data="manage_users")],
+        [InlineKeyboardButton("🔙 Админ-панель", callback_data="admin_panel")]
+    ]
+    await update.message.reply_text(
+        "✅ Операция завершена.",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
     
     context.user_data.pop('remove_state', None)
 
@@ -846,7 +890,17 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text += f"👑 <b>Chief PR Manager:</b>\n• <a href='tg://user?id={CHIEF_ID}'>{CHIEF_ID}</a>\n\n"
     text += f"👑 <b>Creator:</b>\n• <a href='tg://user?id={CREATOR_ID}'>{CREATOR_ID}</a>"
 
-    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+    keyboard = [
+        [InlineKeyboardButton("👥 Управление пользователями", callback_data="manage_users")],
+        [InlineKeyboardButton("🔙 Админ-панель", callback_data="admin_panel")],
+        [InlineKeyboardButton("🔙 Главное меню", callback_data="back_to_main")]
+    ]
+
+    await update.message.reply_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
 # ============ ПОИСК И ЗАКРЫТИЕ ТЕМ ============
 
@@ -858,14 +912,30 @@ async def search_topics(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     args = context.args
     if not args:
-        await update.message.reply_text("❌ /search <ключевое_слово>")
+        keyboard = [
+            [InlineKeyboardButton("🔙 Админ-панель", callback_data="admin_panel")]
+        ]
+        await update.message.reply_text(
+            "🔍 <b>Поиск тем</b>\n\n"
+            "Используйте команду:\n"
+            "/search <ключевое_слово>\n\n"
+            "Пример: /search канал",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
         return
 
     keyword = ' '.join(args).lower()
     results = db.search_topics(keyword)
 
     if not results:
-        await update.message.reply_text(f"❌ По запросу '{keyword}' ничего не найдено.")
+        keyboard = [
+            [InlineKeyboardButton("🔙 Админ-панель", callback_data="admin_panel")]
+        ]
+        await update.message.reply_text(
+            f"❌ По запросу '{keyword}' ничего не найдено.",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
         return
 
     text = f"🔍 <b>Результаты поиска по '{keyword}':</b>\n\n"
@@ -873,7 +943,15 @@ async def search_topics(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += f"• ID: <code>{tid}</code> | {sanitize_text(data.channel_name)}\n"
         text += f"  👥 {data.subscribers} | 📅 {format_date(data.created_at)}\n\n"
 
-    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+    keyboard = [
+        [InlineKeyboardButton("🔙 Админ-панель", callback_data="admin_panel")]
+    ]
+    
+    await update.message.reply_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
 async def close_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -883,7 +961,17 @@ async def close_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     args = context.args
     if not args:
-        await update.message.reply_text("❌ /close_topic <id_темы>")
+        keyboard = [
+            [InlineKeyboardButton("🔙 Админ-панель", callback_data="admin_panel")]
+        ]
+        await update.message.reply_text(
+            "🔒 <b>Закрытие темы</b>\n\n"
+            "Используйте команду:\n"
+            "/close_topic <id_темы>\n\n"
+            "ID темы можно найти через /search",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
         return
 
     try:
@@ -903,7 +991,13 @@ async def close_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text="🔒 Тема закрыта администратором."
         )
         
-        await update.message.reply_text(f"✅ Тема {topic_id} закрыта.")
+        keyboard = [
+            [InlineKeyboardButton("🔙 Админ-панель", callback_data="admin_panel")]
+        ]
+        await update.message.reply_text(
+            f"✅ Тема {topic_id} закрыта.",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
     except ValueError:
         await update.message.reply_text("❌ ID должен быть числом.")
 
@@ -917,13 +1011,17 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         data = query.data
 
+        # ===== ГЛАВНОЕ МЕНЮ =====
         if data == "new_request":
             if not is_pr_manager(user_id) and not is_creator(user_id):
                 await query.edit_message_text("❌ Нет прав.")
                 return
             
             if GROUP_ID == 0:
-                await query.edit_message_text("❌ GROUP_ID не настроен!")
+                await query.edit_message_text(
+                    "❌ GROUP_ID не настроен!",
+                    reply_markup=get_cancel_keyboard()
+                )
                 return
             
             context.user_data['request_state'] = 'SCREENSHOT'
@@ -940,7 +1038,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif data == "my_requests":
             topics = db.get_user_topics(user_id)
             if not topics:
-                await query.edit_message_text("📋 У вас нет запросов.")
+                keyboard = [
+                    [InlineKeyboardButton("📝 Создать запрос", callback_data="new_request")],
+                    [InlineKeyboardButton("🔙 Главное меню", callback_data="back_to_main")]
+                ]
+                await query.edit_message_text(
+                    "📋 У вас нет запросов.",
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
                 return
             
             topics_list = []
@@ -948,6 +1053,17 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 data_topic = db.topics.get(tid)
                 if data_topic:
                     topics_list.append((tid, data_topic))
+            
+            if not topics_list:
+                keyboard = [
+                    [InlineKeyboardButton("📝 Создать запрос", callback_data="new_request")],
+                    [InlineKeyboardButton("🔙 Главное меню", callback_data="back_to_main")]
+                ]
+                await query.edit_message_text(
+                    "📋 У вас нет запросов.",
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+                return
             
             text = "📋 <b>Ваши запросы:</b>\n\n"
             for tid, data_topic in topics_list:
@@ -963,6 +1079,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
+        # ===== ОТКРЫТИЕ ТЕМЫ =====
         if data.startswith("open_topic_"):
             topic_id = int(data.split("_")[2])
             await open_topic(update, context, topic_id)
@@ -995,22 +1112,114 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text="🔒 Тема закрыта администратором."
             )
             
-            await query.edit_message_text(f"✅ Тема {topic_id} закрыта.")
+            keyboard = [
+                [InlineKeyboardButton("📋 Мои запросы", callback_data="my_requests")],
+                [InlineKeyboardButton("🔙 Главное меню", callback_data="back_to_main")]
+            ]
+            await query.edit_message_text(
+                f"✅ Тема {topic_id} закрыта.",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
             return
 
+        # ===== АДМИН-ПАНЕЛЬ =====
         elif data == "admin_panel":
             if not is_admin(user_id) and not is_creator(user_id):
                 await query.edit_message_text("❌ Нет прав.")
                 return
-            await admin_panel(update, context)
+            
+            text = (
+                "⚙️ <b>Админ-панель</b>\n\n"
+                "Управление ботом и пользователями.\n"
+                f"👤 Ваша роль: "
+                f"{'Создатель' if is_creator(user_id) else 'Chief' if is_chief(user_id) else 'Dep.Chief'}"
+            )
+            
+            keyboard = [
+                [InlineKeyboardButton("👥 Управление пользователями", callback_data="manage_users")],
+                [InlineKeyboardButton("🔍 Поиск тем", callback_data="search")],
+                [InlineKeyboardButton("🔒 Закрыть тему", callback_data="close_topic")],
+                [InlineKeyboardButton("📊 Статистика", callback_data="statistics")],
+                [InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")]
+            ]
+            
+            await query.edit_message_text(
+                text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
             return
 
         elif data == "statistics":
-            await statistics(update, context)
+            if not is_admin(user_id) and not is_creator(user_id):
+                await query.edit_message_text("❌ Нет прав.")
+                return
+            
+            active_topics = len([t for t in db.topics.values() if t.is_active])
+            closed_topics = len([t for t in db.topics.values() if not t.is_active])
+            
+            text = (
+                "📊 <b>Статистика бота</b>\n\n"
+                f"👤 <b>Пользователи:</b>\n"
+                f"  • Создатель: 1\n"
+                f"  • Chief: 1\n"
+                f"  • Dep.Chief: {len(db.dep_chiefs)}\n"
+                f"  • PR Managers: {len(db.pr_managers)}\n\n"
+                f"📋 <b>Темы:</b>\n"
+                f"  • Всего: {len(db.topics)}\n"
+                f"  • Активных: {active_topics}\n"
+                f"  • Закрытых: {closed_topics}\n\n"
+                f"💾 <b>База данных:</b>\n"
+                f"  • Файл: {db.file_path}"
+            )
+            
+            keyboard = [
+                [InlineKeyboardButton("🔙 Назад", callback_data="admin_panel")]
+            ]
+            
+            await query.edit_message_text(
+                text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
             return
 
+        # ===== УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ =====
         elif data == "manage_users":
-            await manage_users(update, context)
+            if not is_admin(user_id) and not is_creator(user_id):
+                await query.edit_message_text("❌ Нет прав.")
+                return
+            
+            text = (
+                "👥 <b>Управление пользователями</b>\n\n"
+                f"👤 Ваша роль: "
+                f"{'Создатель' if is_creator(user_id) else 'Chief' if is_chief(user_id) else 'Dep.Chief'}\n\n"
+                f"📋 Всего пользователей: {len(db.pr_managers) + len(db.dep_chiefs) + 2}"
+            )
+            
+            keyboard = []
+            
+            if is_creator(user_id):
+                keyboard.append([InlineKeyboardButton("➕ Добавить Создателя", callback_data="add_creator")])
+                keyboard.append([InlineKeyboardButton("➕ Добавить Chief", callback_data="add_chief")])
+                keyboard.append([InlineKeyboardButton("➕ Добавить Dep.Chief", callback_data="add_dep")])
+                keyboard.append([InlineKeyboardButton("➕ Добавить PR", callback_data="add_pr")])
+            elif is_chief(user_id):
+                keyboard.append([InlineKeyboardButton("➕ Добавить Chief", callback_data="add_chief")])
+                keyboard.append([InlineKeyboardButton("➕ Добавить Dep.Chief", callback_data="add_dep")])
+                keyboard.append([InlineKeyboardButton("➕ Добавить PR", callback_data="add_pr")])
+            elif is_dep_chief(user_id):
+                keyboard.append([InlineKeyboardButton("➕ Добавить PR", callback_data="add_pr")])
+            
+            keyboard.append([InlineKeyboardButton("➖ Удалить пользователя", callback_data="remove_user")])
+            keyboard.append([InlineKeyboardButton("📋 Список пользователей", callback_data="list_users")])
+            keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="admin_panel")])
+            
+            await query.edit_message_text(
+                text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
             return
 
         elif data == "add_creator":
@@ -1046,19 +1255,23 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await list_users(update, context)
             return
 
+        # ===== ПОИСК И ЗАКРЫТИЕ =====
         elif data == "search":
             if not is_admin(user_id) and not is_creator(user_id):
                 await query.edit_message_text("❌ Нет прав.")
                 return
+            
+            keyboard = [
+                [InlineKeyboardButton("🔙 Админ-панель", callback_data="admin_panel")]
+            ]
+            
             await query.edit_message_text(
                 "🔍 <b>Поиск тем</b>\n\n"
-                "Используйте команду:\n/search <ключевое_слово>",
+                "Используйте команду:\n"
+                "/search <ключевое_слово>\n\n"
+                "Пример: /search канал",
                 parse_mode=ParseMode.HTML,
-                reply_markup=get_admin_panel_keyboard(
-                    is_creator=is_creator(user_id),
-                    is_chief=is_chief(user_id),
-                    is_dep_chief=is_dep_chief(user_id)
-                )
+                reply_markup=InlineKeyboardMarkup(keyboard)
             )
             return
 
@@ -1066,36 +1279,45 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not is_admin(user_id) and not is_creator(user_id):
                 await query.edit_message_text("❌ Нет прав.")
                 return
+            
+            keyboard = [
+                [InlineKeyboardButton("🔙 Админ-панель", callback_data="admin_panel")]
+            ]
+            
             await query.edit_message_text(
                 "🔒 <b>Закрытие темы</b>\n\n"
-                "Используйте команду:\n/close_topic <id_темы>",
+                "Используйте команду:\n"
+                "/close_topic <id_темы>\n\n"
+                "ID темы можно найти через /search",
                 parse_mode=ParseMode.HTML,
-                reply_markup=get_admin_panel_keyboard(
-                    is_creator=is_creator(user_id),
-                    is_chief=is_chief(user_id),
-                    is_dep_chief=is_dep_chief(user_id)
-                )
+                reply_markup=InlineKeyboardMarkup(keyboard)
             )
             return
 
+        # ===== НАЗАД =====
         elif data == "back_to_main":
+            user = query.from_user
+            text = f"👋 <b>Главное меню, {sanitize_text(user.full_name)}!</b>"
+            
             keyboard = get_main_keyboard(
                 is_admin=is_admin(user_id),
                 is_creator=is_creator(user_id)
             )
-            user = query.from_user
+            
             await query.edit_message_text(
-                f"👋 <b>Главное меню, {sanitize_text(user.full_name)}!</b>",
+                text,
                 parse_mode=ParseMode.HTML,
                 reply_markup=keyboard
             )
             return
 
+        # ===== ОТМЕНА И ПРОПУСК =====
         elif data == "skip":
             request_data = context.user_data.get('request_data', {})
             request_data['conditions'] = "Не указаны"
             context.user_data['request_data'] = request_data
             await query.edit_message_text("⏭️ Условия пропущены.")
+            
             class FakeUpdate:
                 def __init__(self, user, chat):
                     self.effective_user = user
@@ -1113,7 +1335,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data.pop('add_role', None)
             context.user_data.pop('add_state', None)
             context.user_data.pop('remove_state', None)
+            
             await query.edit_message_text("❌ Операция отменена.")
+            
             keyboard = get_main_keyboard(
                 is_admin=is_admin(user_id),
                 is_creator=is_creator(user_id)
