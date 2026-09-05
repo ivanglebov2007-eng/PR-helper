@@ -39,7 +39,6 @@ def is_creator(user_id: int) -> bool:
 # ============ ФУНКЦИЯ ДЛЯ ПОЛУЧЕНИЯ ИМЕНИ ПОЛЬЗОВАТЕЛЯ ============
 
 async def get_user_name(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> str:
-    """Получает имя пользователя по ID (username или full_name)"""
     try:
         chat = await context.bot.get_chat(user_id)
         if chat.username:
@@ -51,25 +50,9 @@ async def get_user_name(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> str
     except:
         return str(user_id)
 
-# ============ РАБОТА С ТЕМАМИ ============
+# ============ ЗАКРЫТИЕ ТЕМЫ С КИКОМ ВСЕХ КРОМЕ АДМИНОВ ============
 
-async def get_active_topics(context: ContextTypes.DEFAULT_TYPE) -> list:
-    """Получает список всех активных тем в группе"""
-    active_topics = []
-    try:
-        # Получаем все темы через get_forum_topics
-        # В версии python-telegram-bot 20.7 нет прямого метода для получения всех тем
-        # Поэтому используем сохранённые в БД
-        for topic_id, data in db.topics.items():
-            if data.is_active:
-                active_topics.append((topic_id, data))
-        return active_topics
-    except Exception as e:
-        logger.error(f"Ошибка получения активных тем: {e}")
-        return []
-
-async def close_topic_with_kick(update: Update, context: ContextTypes.DEFAULT_TYPE, topic_id: int):
-    """Закрывает тему и удаляет из неё всех пользователей, кроме админов"""
+async def close_topic_with_kick(update: Update, context: ContextTypes.DEFAULT_TYPE, topic_id: int) -> bool:
     user_id = update.effective_user.id
     
     if not is_admin(user_id) and not is_creator(user_id):
@@ -84,25 +67,21 @@ async def close_topic_with_kick(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text("❌ Тема уже закрыта.")
         return False
     
-    # Закрываем тему в БД
     db.close_topic(topic_id, user_id)
     
     try:
-        # Отправляем сообщение о закрытии в тему
+        # Сообщение о закрытии
         await context.bot.send_message(
             chat_id=GROUP_ID,
             message_thread_id=topic_id,
             text="🔒 Тема закрыта администратором."
         )
         
-        # Получаем всех участников темы (админов и обычных пользователей)
-        # В Telegram Bot API нет прямого метода для получения участников темы
-        # Поэтому мы используем другой подход:
-        # 1. Получаем всех администраторов группы
+        # Получаем всех администраторов
         admins = await context.bot.get_chat_administrators(GROUP_ID)
         admin_ids = [admin.user.id for admin in admins]
         
-        # 2. Запрещаем отправку сообщений в теме для всех
+        # Запрещаем отправку сообщений в теме для всех
         await context.bot.set_forum_topic_permissions(
             chat_id=GROUP_ID,
             message_thread_id=topic_id,
@@ -118,7 +97,7 @@ async def close_topic_with_kick(update: Update, context: ContextTypes.DEFAULT_TY
             }
         )
         
-        # 3. Разрешаем отправку сообщений только админам
+        # Разрешаем отправку сообщений только админам
         for admin in admins:
             try:
                 await context.bot.set_forum_topic_permissions(
@@ -139,7 +118,6 @@ async def close_topic_with_kick(update: Update, context: ContextTypes.DEFAULT_TY
             except Exception as e:
                 logger.error(f"Ошибка установки прав для админа {admin.user.id}: {e}")
         
-        # 4. Отправляем уведомление о том, что тема закрыта и доступна только для админов
         await context.bot.send_message(
             chat_id=GROUP_ID,
             message_thread_id=topic_id,
@@ -241,7 +219,6 @@ def get_back_to_main_inline_keyboard() -> InlineKeyboardMarkup:
     ])
 
 def get_close_topic_inline_keyboard(active_topics: list) -> InlineKeyboardMarkup:
-    """Клавиатура со списком активных тем для закрытия"""
     keyboard = []
     if not active_topics:
         keyboard.append([InlineKeyboardButton("📭 Нет активных тем", callback_data="no_topics")])
@@ -253,6 +230,8 @@ def get_close_topic_inline_keyboard(active_topics: list) -> InlineKeyboardMarkup
                     callback_data=f"close_topic_select_{topic_id}"
                 )
             ])
+        # Кнопка "Закрыть все темы"
+        keyboard.append([InlineKeyboardButton("🔴 Закрыть ВСЕ темы", callback_data="close_all_topics")])
     keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="admin_panel")])
     return InlineKeyboardMarkup(keyboard)
 
@@ -314,33 +293,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     state = context.user_data.get('request_state')
     
-    # ===== ОБРАБОТКА СОСТОЯНИЙ =====
     add_state = context.user_data.get('add_state')
     remove_state = context.user_data.get('remove_state')
     search_state = context.user_data.get('search_state')
     close_state = context.user_data.get('close_state')
     
-    # Если ожидаем username для добавления
     if add_state == 'WAITING_USERNAME':
         await add_user_confirm(update, context)
         return
     
-    # Если ожидаем ID для удаления
     if remove_state == 'WAITING_USER_ID':
         await remove_user_confirm(update, context)
         return
     
-    # Если ожидаем ключевое слово для поиска
     if search_state == 'WAITING_KEYWORD':
         await search_topics_confirm(update, context)
         return
     
-    # Если ожидаем ID темы для закрытия
     if close_state == 'WAITING_TOPIC_ID':
         await close_topic_confirm(update, context)
         return
     
-    # ===== ОБРАБОТКА КНОПОК МЕНЮ =====
     if not state:
         if text == "📝 Создать запрос":
             await new_request_start(update, context)
@@ -396,7 +369,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         return
     
-    # ===== СОЗДАНИЕ ЗАПРОСА =====
     request_data = context.user_data.get('request_data', {})
     
     if state == 'SCREENSHOT':
@@ -669,7 +641,6 @@ async def create_request_topic(update: Update, context: ContextTypes.DEFAULT_TYP
             disable_web_page_preview=True
         )
 
-        # === ТЕГИРУЕМ CHIEF ===
         chief_name = await get_user_name(context, CHIEF_ID)
         try:
             await context.bot.send_message(
@@ -682,7 +653,6 @@ async def create_request_topic(update: Update, context: ContextTypes.DEFAULT_TYP
         except Exception as e:
             logger.error(f"❌ Ошибка тегирования Chief: {e}")
 
-        # === ТЕГИРУЕМ DEP.CHIEF ===
         for dep_id in db.dep_chiefs:
             dep_name = await get_user_name(context, dep_id)
             try:
@@ -696,7 +666,6 @@ async def create_request_topic(update: Update, context: ContextTypes.DEFAULT_TYP
             except Exception as e:
                 logger.error(f"❌ Ошибка тегирования Dep.Chief {dep_id}: {e}")
 
-        # === СКРЫВАЕМ ТЕМУ ===
         try:
             admins = await context.bot.get_chat_administrators(GROUP_ID)
             
@@ -864,17 +833,15 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=keyboard
     )
 
-# ============ ЗАКРЫТИЕ ТЕМЫ (СПИСОК АКТИВНЫХ ТЕМ) ============
+# ============ ЗАКРЫТИЕ ТЕМ (СПИСОК АКТИВНЫХ ТЕМ) ============
 
 async def show_close_topics(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает список активных тем для закрытия"""
     user_id = update.effective_user.id
     
     if not is_admin(user_id) and not is_creator(user_id):
         await update.message.reply_text("❌ Нет прав.")
         return
     
-    # Получаем активные темы
     active_topics = []
     for topic_id, data in db.topics.items():
         if data.is_active:
@@ -902,7 +869,6 @@ async def show_close_topics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def close_topic_select(update: Update, context: ContextTypes.DEFAULT_TYPE, topic_id: int):
-    """Закрывает выбранную тему"""
     query = update.callback_query
     user_id = query.from_user.id
     
@@ -918,13 +884,113 @@ async def close_topic_select(update: Update, context: ContextTypes.DEFAULT_TYPE,
         await query.edit_message_text("❌ Тема уже закрыта.")
         return
     
-    # Закрываем тему
-    success = await close_topic_with_kick(update, context, topic_id)
+    success = await close_topic_with_kick_for_callback(update, context, topic_id)
     
     if success:
         await query.edit_message_text(f"✅ Тема {topic_id} успешно закрыта.")
     else:
-        await query.edit_message_text("❌ Ошибка при закрытии темы.")
+        await query.edit_message_text("❌ Ошибка при закрытии темы. Проверьте права бота.")
+
+async def close_all_topics(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    if not is_admin(user_id) and not is_creator(user_id):
+        await query.edit_message_text("❌ Нет прав.")
+        return
+    
+    active_topics = []
+    for topic_id, data in db.topics.items():
+        if data.is_active:
+            active_topics.append(topic_id)
+    
+    if not active_topics:
+        await query.edit_message_text("📭 Нет активных тем для закрытия.")
+        return
+    
+    await query.edit_message_text(f"⏳ Закрываю {len(active_topics)} тем...")
+    
+    success_count = 0
+    for topic_id in active_topics:
+        success = await close_topic_with_kick_for_callback(update, context, topic_id)
+        if success:
+            success_count += 1
+    
+    await query.edit_message_text(
+        f"✅ Закрыто {success_count} из {len(active_topics)} тем.\n"
+        f"❌ Не закрыто: {len(active_topics) - success_count}"
+    )
+
+async def close_topic_with_kick_for_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, topic_id: int) -> bool:
+    user_id = update.effective_user.id
+    
+    if not is_admin(user_id) and not is_creator(user_id):
+        return False
+    
+    if topic_id not in db.topics:
+        return False
+    
+    if not db.topics[topic_id].is_active:
+        return False
+    
+    db.close_topic(topic_id, user_id)
+    
+    try:
+        await context.bot.send_message(
+            chat_id=GROUP_ID,
+            message_thread_id=topic_id,
+            text="🔒 Тема закрыта администратором."
+        )
+        
+        admins = await context.bot.get_chat_administrators(GROUP_ID)
+        
+        await context.bot.set_forum_topic_permissions(
+            chat_id=GROUP_ID,
+            message_thread_id=topic_id,
+            permissions={
+                "can_send_messages": False,
+                "can_send_media_messages": False,
+                "can_send_polls": False,
+                "can_send_other_messages": False,
+                "can_add_web_page_previews": False,
+                "can_change_info": False,
+                "can_invite_users": False,
+                "can_pin_messages": False
+            }
+        )
+        
+        for admin in admins:
+            try:
+                await context.bot.set_forum_topic_permissions(
+                    chat_id=GROUP_ID,
+                    message_thread_id=topic_id,
+                    user_id=admin.user.id,
+                    permissions={
+                        "can_send_messages": True,
+                        "can_send_media_messages": True,
+                        "can_send_polls": True,
+                        "can_send_other_messages": True,
+                        "can_add_web_page_previews": True,
+                        "can_change_info": True,
+                        "can_invite_users": True,
+                        "can_pin_messages": True
+                    }
+                )
+            except:
+                pass
+        
+        await context.bot.send_message(
+            chat_id=GROUP_ID,
+            message_thread_id=topic_id,
+            text="🔒 Тема закрыта. Доступна только для администраторов."
+        )
+        
+        logger.info(f"✅ Тема {topic_id} закрыта")
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Ошибка закрытия темы {topic_id}: {e}")
+        return False
 
 # ============ СТАТИСТИКА ============
 
@@ -1359,26 +1425,18 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if data.startswith("close_topic_"):
             topic_id = int(data.split("_")[2])
-            if not is_admin(user_id) and not is_creator(user_id):
-                await query.edit_message_text("❌ Нет прав.")
-                return
-            
-            if topic_id not in db.topics:
-                await query.edit_message_text("❌ Тема не найдена.")
-                return
-            
-            if not db.topics[topic_id].is_active:
-                await query.edit_message_text("❌ Тема уже закрыта.")
-                return
-            
             await close_topic_select(update, context, topic_id)
             return
 
-        elif data == "no_topics":
+        if data == "close_all_topics":
+            await close_all_topics(update, context)
+            return
+
+        if data == "no_topics":
             await query.edit_message_text("📭 Нет активных тем для закрытия.")
             return
 
-        elif data == "back_to_main":
+        if data == "back_to_main":
             user = query.from_user
             context.user_data.pop('add_state', None)
             context.user_data.pop('remove_state', None)
@@ -1400,7 +1458,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        elif data == "admin_panel":
+        if data == "admin_panel":
             if not is_admin(user_id) and not is_creator(user_id):
                 await query.edit_message_text("❌ Нет прав.")
                 return
@@ -1421,7 +1479,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        elif data == "my_requests":
+        if data == "my_requests":
             topics = db.get_user_topics(user_id)
             if not topics:
                 keyboard = get_main_reply_keyboard(
