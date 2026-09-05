@@ -24,6 +24,9 @@ logger = logging.getLogger(__name__)
 # Инициализация БД
 db = Database(DATABASE_URL)
 
+# Передаём БД в handlers
+set_db(db)
+
 async def main():
     logger.info("🚀 Запуск...")
 
