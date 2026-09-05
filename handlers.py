@@ -2,7 +2,7 @@ import logging
 from datetime import datetime
 from typing import Optional
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes, ConversationHandler
 
@@ -36,27 +36,81 @@ def is_pr_manager(user_id: int) -> bool:
 def is_creator(user_id: int) -> bool:
     return user_id == CREATOR_ID
 
-# ============ КЛАВИАТУРЫ ============
+# ============ REPLY КЛАВИАТУРЫ (прикрепляются к полю ввода) ============
 
-def get_main_keyboard(is_admin: bool = False, is_creator: bool = False) -> InlineKeyboardMarkup:
+def get_main_reply_keyboard(is_admin: bool = False, is_creator: bool = False) -> ReplyKeyboardMarkup:
+    """Главное меню - кнопки в поле ввода"""
     keyboard = [
-        [InlineKeyboardButton("📝 Создать запрос", callback_data="new_request")],
-        [InlineKeyboardButton("📋 Мои запросы", callback_data="my_requests")],
+        ["📝 Создать запрос"],
+        ["📋 Мои запросы"],
     ]
     if is_admin or is_creator:
-        keyboard.append([InlineKeyboardButton("⚙️ Админ-панель", callback_data="admin_panel")])
-    return InlineKeyboardMarkup(keyboard)
+        keyboard.append(["⚙️ Админ-панель"])
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
 
-def get_cancel_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="cancel")]])
+def get_cancel_reply_keyboard() -> ReplyKeyboardMarkup:
+    """Клавиатура с кнопкой отмены"""
+    return ReplyKeyboardMarkup(
+        [["❌ Отмена"]],
+        resize_keyboard=True,
+        one_time_keyboard=True
+    )
 
-def get_skip_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("⏭️ Пропустить", callback_data="skip")],
-        [InlineKeyboardButton("❌ Отмена", callback_data="cancel")]
-    ])
+def get_skip_reply_keyboard() -> ReplyKeyboardMarkup:
+    """Клавиатура с кнопками пропуска и отмены"""
+    return ReplyKeyboardMarkup(
+        [
+            ["⏭️ Пропустить"],
+            ["❌ Отмена"]
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True
+    )
 
-def get_my_requests_keyboard(topics: list) -> InlineKeyboardMarkup:
+def get_admin_reply_keyboard() -> ReplyKeyboardMarkup:
+    """Админ-панель - кнопки в поле ввода"""
+    keyboard = [
+        ["👥 Управление пользователями"],
+        ["🔍 Поиск тем", "🔒 Закрыть тему"],
+        ["📊 Статистика"],
+        ["🔙 Назад"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
+
+def get_manage_users_reply_keyboard(is_creator: bool = False, is_chief: bool = False, is_dep_chief: bool = False) -> ReplyKeyboardMarkup:
+    """Управление пользователями - кнопки в поле ввода"""
+    keyboard = []
+    
+    if is_creator:
+        keyboard.append(["➕ Добавить Создателя"])
+        keyboard.append(["➕ Добавить Chief"])
+        keyboard.append(["➕ Добавить Dep.Chief"])
+        keyboard.append(["➕ Добавить PR"])
+    elif is_chief:
+        keyboard.append(["➕ Добавить Chief"])
+        keyboard.append(["➕ Добавить Dep.Chief"])
+        keyboard.append(["➕ Добавить PR"])
+    elif is_dep_chief:
+        keyboard.append(["➕ Добавить PR"])
+    
+    keyboard.append(["➖ Удалить пользователя"])
+    keyboard.append(["📋 Список пользователей"])
+    keyboard.append(["🔙 Назад"])
+    
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
+
+def get_after_request_reply_keyboard() -> ReplyKeyboardMarkup:
+    """Клавиатура после создания запроса"""
+    keyboard = [
+        ["📝 Создать запрос"],
+        ["📋 Мои запросы"],
+        ["⚙️ Админ-панель"]
+    ]
+    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
+
+# ============ INLINE КЛАВИАТУРЫ (для списка запросов) ============
+
+def get_my_requests_inline_keyboard(topics: list) -> InlineKeyboardMarkup:
     keyboard = []
     for topic_id, data in topics:
         status = "🟢" if data.is_active else "🔴"
@@ -69,7 +123,7 @@ def get_my_requests_keyboard(topics: list) -> InlineKeyboardMarkup:
     keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")])
     return InlineKeyboardMarkup(keyboard)
 
-def get_topic_action_keyboard(topic_id: int, is_admin: bool = False) -> InlineKeyboardMarkup:
+def get_topic_action_inline_keyboard(topic_id: int, is_admin: bool = False) -> InlineKeyboardMarkup:
     keyboard = [
         [InlineKeyboardButton("📂 Перейти к теме", callback_data=f"goto_topic_{topic_id}")],
     ]
@@ -77,6 +131,11 @@ def get_topic_action_keyboard(topic_id: int, is_admin: bool = False) -> InlineKe
         keyboard.append([InlineKeyboardButton("🔒 Закрыть тему", callback_data=f"close_topic_{topic_id}")])
     keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="my_requests")])
     return InlineKeyboardMarkup(keyboard)
+
+def get_back_to_main_inline_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔙 Главное меню", callback_data="back_to_main")]
+    ])
 
 # ============ КОМАНДА /start ============
 
@@ -87,13 +146,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_pr_manager(user_id) and not is_creator(user_id):
         await update.message.reply_text(
             "❌ У вас нет доступа.\nОбратитесь к Chief PR Manager.",
-            reply_markup=get_cancel_keyboard()
+            reply_markup=get_cancel_reply_keyboard()
         )
         return
 
-    text = f"👋 <b>Главное меню, {sanitize_text(user.full_name)}!</b>"
+    text = f"👋 <b>Главное меню, {sanitize_text(user.full_name)}!</b>\n\nВыберите действие:"
     
-    keyboard = get_main_keyboard(
+    keyboard = get_main_reply_keyboard(
         is_admin=is_admin(user_id),
         is_creator=is_creator(user_id)
     )
@@ -116,7 +175,7 @@ async def new_request_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if GROUP_ID == 0:
         await update.message.reply_text(
             "❌ GROUP_ID не настроен!",
-            reply_markup=get_cancel_keyboard()
+            reply_markup=get_cancel_reply_keyboard()
         )
         return
 
@@ -125,16 +184,72 @@ async def new_request_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         "📝 <b>Шаг 1/6: отправьте СКРИНШОТ переписки</b>\n\n"
-        "Отправьте фото (скриншот диалога с медиа):",
+        "Отправьте фото (скриншот диалога с медиа):\n\n"
+        "Или нажмите 'Отмена' для выхода.",
         parse_mode=ParseMode.HTML,
-        reply_markup=get_cancel_keyboard()
+        reply_markup=get_cancel_reply_keyboard()
     )
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    text = update.message.text
     state = context.user_data.get('request_state')
     
+    # Обработка кнопок меню
     if not state:
+        if text == "📝 Создать запрос":
+            await new_request_start(update, context)
+            return
+        elif text == "📋 Мои запросы":
+            await my_requests(update, context)
+            return
+        elif text == "⚙️ Админ-панель":
+            await admin_panel(update, context)
+            return
+        elif text == "👥 Управление пользователями":
+            await manage_users(update, context)
+            return
+        elif text == "🔍 Поиск тем":
+            await search_topics_prompt(update, context)
+            return
+        elif text == "🔒 Закрыть тему":
+            await close_topic_prompt(update, context)
+            return
+        elif text == "📊 Статистика":
+            await statistics(update, context)
+            return
+        elif text == "➕ Добавить Создателя":
+            await add_user_start(update, context, "creator")
+            return
+        elif text == "➕ Добавить Chief":
+            await add_user_start(update, context, "chief")
+            return
+        elif text == "➕ Добавить Dep.Chief":
+            await add_user_start(update, context, "dep")
+            return
+        elif text == "➕ Добавить PR":
+            await add_user_start(update, context, "pr")
+            return
+        elif text == "➖ Удалить пользователя":
+            await remove_user_start(update, context)
+            return
+        elif text == "📋 Список пользователей":
+            await list_users(update, context)
+            return
+        elif text == "🔙 Назад":
+            await back_to_main(update, context)
+            return
+        elif text == "❌ Отмена":
+            await cancel_operation(update, context)
+            return
+        elif text == "⏭️ Пропустить":
+            # Обработка пропуска условий
+            request_data = context.user_data.get('request_data', {})
+            request_data['conditions'] = "Не указаны"
+            context.user_data['request_data'] = request_data
+            await update.message.reply_text("⏭️ Условия пропущены.")
+            await finish_request(update, context)
+            return
         return
     
     request_data = context.user_data.get('request_data', {})
@@ -144,7 +259,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not photo:
             await update.message.reply_text(
                 "❌ Отправьте изображение (фото).\nПопробуйте ещё раз:",
-                reply_markup=get_cancel_keyboard()
+                reply_markup=get_cancel_reply_keyboard()
             )
             return
         
@@ -161,25 +276,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Поддерживаются: YouTube, Twitch, TikTok\n\n"
                 "Пример: https://www.youtube.com/@channel",
                 parse_mode=ParseMode.HTML,
-                reply_markup=get_cancel_keyboard()
+                reply_markup=get_cancel_reply_keyboard()
             )
         except Exception as e:
             logger.error(f"Ошибка скриншота: {e}")
             await update.message.reply_text(
                 "❌ Ошибка при загрузке фото. Попробуйте ещё раз.",
-                reply_markup=get_cancel_keyboard()
+                reply_markup=get_cancel_reply_keyboard()
             )
         return
     
     if state == 'MEDIA_LINK':
-        text = update.message.text.strip()
         if not validate_media_link(text):
             await update.message.reply_text(
                 "❌ Некорректная ссылка.\n"
                 "Ссылка должна начинаться с http:// или https://\n"
                 "И содержать: youtube, twitch или tiktok\n\n"
                 "Попробуйте ещё раз:",
-                reply_markup=get_cancel_keyboard()
+                reply_markup=get_cancel_reply_keyboard()
             )
             return
         
@@ -191,16 +305,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "✅ Ссылка принята.\n\n"
             "📌 <b>Шаг 3/6: введите название канала</b>",
             parse_mode=ParseMode.HTML,
-            reply_markup=get_cancel_keyboard()
+            reply_markup=get_cancel_reply_keyboard()
         )
         return
     
     if state == 'CHANNEL_NAME':
-        text = update.message.text.strip()
         if not text:
             await update.message.reply_text(
                 "❌ Название не может быть пустым.",
-                reply_markup=get_cancel_keyboard()
+                reply_markup=get_cancel_reply_keyboard()
             )
             return
         
@@ -213,12 +326,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "👥 <b>Шаг 4/6: количество подписчиков</b>\n"
             "Введите только цифры (пример: 10000 или 10,000):",
             parse_mode=ParseMode.HTML,
-            reply_markup=get_cancel_keyboard()
+            reply_markup=get_cancel_reply_keyboard()
         )
         return
     
     if state == 'SUBSCRIBERS':
-        text = update.message.text.strip()
         try:
             subs = int(text.replace(' ', '').replace(',', '').replace('.', ''))
             if subs < 0:
@@ -228,7 +340,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(
                 "❌ Введите корректное число (только цифры).\n"
                 "Пример: 10000",
-                reply_markup=get_cancel_keyboard()
+                reply_markup=get_cancel_reply_keyboard()
             )
             return
         
@@ -241,16 +353,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "📞 <b>Шаг 5/6: отправьте ссылку для связи</b>\n"
             "Telegram, email, сайт и т.д.:",
             parse_mode=ParseMode.HTML,
-            reply_markup=get_cancel_keyboard()
+            reply_markup=get_cancel_reply_keyboard()
         )
         return
     
     if state == 'CONTACT_LINK':
-        text = update.message.text.strip()
         if not text:
             await update.message.reply_text(
                 "❌ Введите ссылку.",
-                reply_markup=get_cancel_keyboard()
+                reply_markup=get_cancel_reply_keyboard()
             )
             return
         
@@ -264,14 +375,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "✅ Ссылка сохранена.\n\n"
             "📝 <b>Шаг 6/6: отправьте желаемые условия</b>\n"
-            "Или нажмите кнопку 'Пропустить':",
+            "Или нажмите 'Пропустить':",
             parse_mode=ParseMode.HTML,
-            reply_markup=get_skip_keyboard()
+            reply_markup=get_skip_reply_keyboard()
         )
         return
     
     if state == 'CONDITIONS':
-        text = update.message.text.strip()
         request_data['conditions'] = sanitize_text(text) if text else "Не указаны"
         context.user_data['request_data'] = request_data
         
@@ -288,7 +398,10 @@ async def finish_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"❌ Не хватает полей: {', '.join(missing)}\n"
             "Начните заново с /new_request",
-            reply_markup=get_cancel_keyboard()
+            reply_markup=get_main_reply_keyboard(
+                is_admin=is_admin(user_id),
+                is_creator=is_creator(user_id)
+            )
         )
         context.user_data.pop('request_state', None)
         context.user_data.pop('request_data', None)
@@ -335,18 +448,17 @@ async def finish_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         db.add_topic(topic_id, request_obj)
 
-        keyboard = [
-            [InlineKeyboardButton("📋 Мои запросы", callback_data="my_requests")],
-            [InlineKeyboardButton("📝 Создать новый запрос", callback_data="new_request")],
-            [InlineKeyboardButton("🔙 Главное меню", callback_data="back_to_main")]
-        ]
+        keyboard = get_main_reply_keyboard(
+            is_admin=is_admin(user_id),
+            is_creator=is_creator(user_id)
+        )
 
         await update.message.reply_text(
             f"✅ <b>Запрос успешно создан!</b>\n\n"
             f"🆔 ID темы: <code>{topic_id}</code>\n"
             f"📌 Тема создана в группе и отмечена для руководства.",
             parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            reply_markup=keyboard
         )
     else:
         error_msg = "❌ Не удалось создать запрос. Проверьте:\n" \
@@ -356,7 +468,10 @@ async def finish_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "4. Что GROUP_ID правильный (должен быть отрицательным!)"
         await update.message.reply_text(
             error_msg,
-            reply_markup=get_cancel_keyboard()
+            reply_markup=get_main_reply_keyboard(
+                is_admin=is_admin(user_id),
+                is_creator=is_creator(user_id)
+            )
         )
 
     context.user_data.pop('request_state', None)
@@ -488,13 +603,13 @@ async def my_requests(update: Update, context: ContextTypes.DEFAULT_TYPE):
     topics = db.get_user_topics(user_id)
 
     if not topics:
-        keyboard = [
-            [InlineKeyboardButton("📝 Создать запрос", callback_data="new_request")],
-            [InlineKeyboardButton("🔙 Главное меню", callback_data="back_to_main")]
-        ]
+        keyboard = get_main_reply_keyboard(
+            is_admin=is_admin(user_id),
+            is_creator=is_creator(user_id)
+        )
         await update.message.reply_text(
             "📋 У вас нет запросов.",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            reply_markup=keyboard
         )
         return
 
@@ -505,13 +620,13 @@ async def my_requests(update: Update, context: ContextTypes.DEFAULT_TYPE):
             topics_list.append((tid, data))
     
     if not topics_list:
-        keyboard = [
-            [InlineKeyboardButton("📝 Создать запрос", callback_data="new_request")],
-            [InlineKeyboardButton("🔙 Главное меню", callback_data="back_to_main")]
-        ]
+        keyboard = get_main_reply_keyboard(
+            is_admin=is_admin(user_id),
+            is_creator=is_creator(user_id)
+        )
         await update.message.reply_text(
             "📋 У вас нет запросов.",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            reply_markup=keyboard
         )
         return
 
@@ -525,7 +640,7 @@ async def my_requests(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         text,
         parse_mode=ParseMode.HTML,
-        reply_markup=get_my_requests_keyboard(topics_list)
+        reply_markup=get_my_requests_inline_keyboard(topics_list)
     )
 
 async def open_topic(update: Update, context: ContextTypes.DEFAULT_TYPE, topic_id: int):
@@ -556,17 +671,14 @@ async def open_topic(update: Update, context: ContextTypes.DEFAULT_TYPE, topic_i
         text,
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
-        reply_markup=get_topic_action_keyboard(topic_id, is_admin(user_id) or is_creator(user_id))
+        reply_markup=get_topic_action_inline_keyboard(topic_id, is_admin(user_id) or is_creator(user_id))
     )
 
 async def goto_topic(update: Update, context: ContextTypes.DEFAULT_TYPE, topic_id: int):
     query = update.callback_query
     topic_link = f"https://t.me/c/{str(GROUP_ID)[4:]}/{topic_id}"
     
-    keyboard = [
-        [InlineKeyboardButton("🔙 Назад", callback_data="my_requests")],
-        [InlineKeyboardButton("🔙 Главное меню", callback_data="back_to_main")]
-    ]
+    keyboard = get_back_to_main_inline_keyboard()
     
     await query.edit_message_text(
         f"🔗 <b>Переход к теме #{topic_id}</b>\n\n"
@@ -575,17 +687,16 @@ async def goto_topic(update: Update, context: ContextTypes.DEFAULT_TYPE, topic_i
         f"Или скопируйте ссылку:\n<code>{topic_link}</code>",
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        reply_markup=keyboard
     )
 
 # ============ АДМИН-ПАНЕЛЬ ============
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    user_id = query.from_user.id
+    user_id = update.effective_user.id
     
     if not is_admin(user_id) and not is_creator(user_id):
-        await query.edit_message_text("❌ Нет прав.")
+        await update.message.reply_text("❌ Нет прав.")
         return
     
     text = (
@@ -595,26 +706,19 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"{'Создатель' if is_creator(user_id) else 'Chief' if is_chief(user_id) else 'Dep.Chief'}"
     )
     
-    keyboard = [
-        [InlineKeyboardButton("👥 Управление пользователями", callback_data="manage_users")],
-        [InlineKeyboardButton("🔍 Поиск тем", callback_data="search")],
-        [InlineKeyboardButton("🔒 Закрыть тему", callback_data="close_topic")],
-        [InlineKeyboardButton("📊 Статистика", callback_data="statistics")],
-        [InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")]
-    ]
+    keyboard = get_admin_reply_keyboard()
     
-    await query.edit_message_text(
+    await update.message.reply_text(
         text,
         parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        reply_markup=keyboard
     )
 
 async def statistics(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    user_id = query.from_user.id
+    user_id = update.effective_user.id
     
     if not is_admin(user_id) and not is_creator(user_id):
-        await query.edit_message_text("❌ Нет прав.")
+        await update.message.reply_text("❌ Нет прав.")
         return
     
     active_topics = len([t for t in db.topics.values() if t.is_active])
@@ -635,24 +739,21 @@ async def statistics(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"  • Файл: {db.file_path}"
     )
     
-    keyboard = [
-        [InlineKeyboardButton("🔙 Назад", callback_data="admin_panel")]
-    ]
+    keyboard = get_admin_reply_keyboard()
     
-    await query.edit_message_text(
+    await update.message.reply_text(
         text,
         parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        reply_markup=keyboard
     )
 
 # ============ УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ ============
 
 async def manage_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    user_id = query.from_user.id
+    user_id = update.effective_user.id
     
     if not is_admin(user_id) and not is_creator(user_id):
-        await query.edit_message_text("❌ Нет прав.")
+        await update.message.reply_text("❌ Нет прав.")
         return
     
     text = (
@@ -663,42 +764,29 @@ async def manage_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📋 Всего пользователей: {len(db.pr_managers) + len(db.dep_chiefs) + 2}"
     )
     
-    keyboard = []
+    keyboard = get_manage_users_reply_keyboard(
+        is_creator=is_creator(user_id),
+        is_chief=is_chief(user_id),
+        is_dep_chief=is_dep_chief(user_id)
+    )
     
-    if is_creator(user_id):
-        keyboard.append([InlineKeyboardButton("➕ Добавить Создателя", callback_data="add_creator")])
-        keyboard.append([InlineKeyboardButton("➕ Добавить Chief", callback_data="add_chief")])
-        keyboard.append([InlineKeyboardButton("➕ Добавить Dep.Chief", callback_data="add_dep")])
-        keyboard.append([InlineKeyboardButton("➕ Добавить PR", callback_data="add_pr")])
-    elif is_chief(user_id):
-        keyboard.append([InlineKeyboardButton("➕ Добавить Chief", callback_data="add_chief")])
-        keyboard.append([InlineKeyboardButton("➕ Добавить Dep.Chief", callback_data="add_dep")])
-        keyboard.append([InlineKeyboardButton("➕ Добавить PR", callback_data="add_pr")])
-    elif is_dep_chief(user_id):
-        keyboard.append([InlineKeyboardButton("➕ Добавить PR", callback_data="add_pr")])
-    
-    keyboard.append([InlineKeyboardButton("➖ Удалить пользователя", callback_data="remove_user")])
-    keyboard.append([InlineKeyboardButton("📋 Список пользователей", callback_data="list_users")])
-    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="admin_panel")])
-    
-    await query.edit_message_text(
+    await update.message.reply_text(
         text,
         parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        reply_markup=keyboard
     )
 
 async def add_user_start(update: Update, context: ContextTypes.DEFAULT_TYPE, role: str):
-    query = update.callback_query
-    user_id = query.from_user.id
+    user_id = update.effective_user.id
     
     if role == "creator" and not is_creator(user_id):
-        await query.edit_message_text("❌ Только Создатель может добавлять Создателя.")
+        await update.message.reply_text("❌ Только Создатель может добавлять Создателя.")
         return
     if role == "chief" and not is_creator(user_id) and not is_chief(user_id):
-        await query.edit_message_text("❌ Только Chief или Создатель может добавлять Chief.")
+        await update.message.reply_text("❌ Только Chief или Создатель может добавлять Chief.")
         return
     if role == "dep" and not is_creator(user_id) and not is_chief(user_id):
-        await query.edit_message_text("❌ Только Chief или Создатель может добавлять Dep.Chief.")
+        await update.message.reply_text("❌ Только Chief или Создатель может добавлять Dep.Chief.")
         return
     
     role_names = {
@@ -711,13 +799,13 @@ async def add_user_start(update: Update, context: ContextTypes.DEFAULT_TYPE, rol
     context.user_data['add_role'] = role
     context.user_data['add_state'] = 'WAITING_USERNAME'
     
-    await query.edit_message_text(
+    await update.message.reply_text(
         f"➕ <b>Добавление {role_names.get(role, 'пользователя')}</b>\n\n"
         f"Отправьте username пользователя (например, @username) или его ID:\n\n"
         f"Пример: @john или 123456789\n\n"
-        f"Для отмены нажмите кнопку ниже.",
+        f"Для отмены нажмите кнопку 'Отмена'.",
         parse_mode=ParseMode.HTML,
-        reply_markup=get_cancel_keyboard()
+        reply_markup=get_cancel_reply_keyboard()
     )
 
 async def add_user_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -738,7 +826,7 @@ async def add_user_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             await update.message.reply_text(
                 "❌ Не удалось найти пользователя. Проверьте username или ID.",
-                reply_markup=get_cancel_keyboard()
+                reply_markup=get_cancel_reply_keyboard()
             )
             return
     
@@ -789,35 +877,36 @@ async def add_user_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
         
-        keyboard = [
-            [InlineKeyboardButton("👥 Управление пользователями", callback_data="manage_users")],
-            [InlineKeyboardButton("🔙 Админ-панель", callback_data="admin_panel")]
-        ]
+        keyboard = get_manage_users_reply_keyboard(
+            is_creator=is_creator(user_id),
+            is_chief=is_chief(user_id),
+            is_dep_chief=is_dep_chief(user_id)
+        )
         await update.message.reply_text(
             "✅ Операция завершена.",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            reply_markup=keyboard
         )
     
     context.user_data.pop('add_role', None)
     context.user_data.pop('add_state', None)
 
 async def remove_user_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    user_id = query.from_user.id
+    user_id = update.effective_user.id
     
     if not is_admin(user_id) and not is_creator(user_id):
-        await query.edit_message_text("❌ Нет прав.")
+        await update.message.reply_text("❌ Нет прав.")
         return
     
     context.user_data['remove_state'] = 'WAITING_USER_ID'
     
-    await query.edit_message_text(
+    await update.message.reply_text(
         "➖ <b>Удаление пользователя</b>\n\n"
         "Отправьте ID пользователя, которого хотите удалить:\n\n"
         "Пример: 123456789\n\n"
-        "⚠️ Нельзя удалить Chief PR Manager и Создателя.",
+        "⚠️ Нельзя удалить Chief PR Manager и Создателя.\n\n"
+        "Для отмены нажмите кнопку 'Отмена'.",
         parse_mode=ParseMode.HTML,
-        reply_markup=get_cancel_keyboard()
+        reply_markup=get_cancel_reply_keyboard()
     )
 
 async def remove_user_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -829,7 +918,7 @@ async def remove_user_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE
     except ValueError:
         await update.message.reply_text(
             "❌ Введите корректный ID (только цифры).",
-            reply_markup=get_cancel_keyboard()
+            reply_markup=get_cancel_reply_keyboard()
         )
         return
     
@@ -847,13 +936,14 @@ async def remove_user_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE
     else:
         await update.message.reply_text("❌ Пользователь не найден.")
     
-    keyboard = [
-        [InlineKeyboardButton("👥 Управление пользователями", callback_data="manage_users")],
-        [InlineKeyboardButton("🔙 Админ-панель", callback_data="admin_panel")]
-    ]
+    keyboard = get_manage_users_reply_keyboard(
+        is_creator=is_creator(user_id),
+        is_chief=is_chief(user_id),
+        is_dep_chief=is_dep_chief(user_id)
+    )
     await update.message.reply_text(
         "✅ Операция завершена.",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        reply_markup=keyboard
     )
     
     context.user_data.pop('remove_state', None)
@@ -883,116 +973,171 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text += f"👑 <b>Chief PR Manager:</b>\n• <a href='tg://user?id={CHIEF_ID}'>{CHIEF_ID}</a>\n\n"
     text += f"👑 <b>Creator:</b>\n• <a href='tg://user?id={CREATOR_ID}'>{CREATOR_ID}</a>"
 
-    keyboard = [
-        [InlineKeyboardButton("👥 Управление пользователями", callback_data="manage_users")],
-        [InlineKeyboardButton("🔙 Админ-панель", callback_data="admin_panel")],
-        [InlineKeyboardButton("🔙 Главное меню", callback_data="back_to_main")]
-    ]
+    keyboard = get_manage_users_reply_keyboard(
+        is_creator=is_creator(user_id),
+        is_chief=is_chief(user_id),
+        is_dep_chief=is_dep_chief(user_id)
+    )
 
     await update.message.reply_text(
         text,
         parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        reply_markup=keyboard
     )
 
 # ============ ПОИСК И ЗАКРЫТИЕ ТЕМ ============
 
-async def search_topics(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def search_topics_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not is_admin(user_id) and not is_creator(user_id):
         await update.message.reply_text("❌ Нет прав.")
         return
+    
+    context.user_data['search_state'] = 'WAITING_KEYWORD'
+    
+    await update.message.reply_text(
+        "🔍 <b>Поиск тем</b>\n\n"
+        "Введите ключевое слово для поиска:\n\n"
+        "Пример: канал",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_cancel_reply_keyboard()
+    )
 
-    args = context.args
-    if not args:
-        keyboard = [
-            [InlineKeyboardButton("🔙 Админ-панель", callback_data="admin_panel")]
-        ]
+async def search_topics_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    text = update.message.text.strip()
+    
+    if not text:
         await update.message.reply_text(
-            "🔍 <b>Поиск тем</b>\n\n"
-            "Используйте команду:\n"
-            "/search <ключевое_слово>\n\n"
-            "Пример: /search канал",
-            parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            "❌ Введите ключевое слово.",
+            reply_markup=get_cancel_reply_keyboard()
         )
         return
-
-    keyword = ' '.join(args).lower()
+    
+    keyword = text.lower()
     results = db.search_topics(keyword)
 
     if not results:
-        keyboard = [
-            [InlineKeyboardButton("🔙 Админ-панель", callback_data="admin_panel")]
-        ]
+        keyboard = get_admin_reply_keyboard()
         await update.message.reply_text(
             f"❌ По запросу '{keyword}' ничего не найдено.",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            reply_markup=keyboard
         )
+        context.user_data.pop('search_state', None)
         return
 
-    text = f"🔍 <b>Результаты поиска по '{keyword}':</b>\n\n"
+    text_msg = f"🔍 <b>Результаты поиска по '{keyword}':</b>\n\n"
     for tid, data in results:
-        text += f"• ID: <code>{tid}</code> | {sanitize_text(data.channel_name)}\n"
-        text += f"  👥 {data.subscribers} | 📅 {format_date(data.created_at)}\n\n"
+        text_msg += f"• ID: <code>{tid}</code> | {sanitize_text(data.channel_name)}\n"
+        text_msg += f"  👥 {data.subscribers} | 📅 {format_date(data.created_at)}\n\n"
 
-    keyboard = [
-        [InlineKeyboardButton("🔙 Админ-панель", callback_data="admin_panel")]
-    ]
+    keyboard = get_admin_reply_keyboard()
+    context.user_data.pop('search_state', None)
+    
+    await update.message.reply_text(
+        text_msg,
+        parse_mode=ParseMode.HTML,
+        reply_markup=keyboard
+    )
+
+async def close_topic_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not is_admin(user_id) and not is_creator(user_id):
+        await update.message.reply_text("❌ Нет прав.")
+        return
+    
+    context.user_data['close_state'] = 'WAITING_TOPIC_ID'
+    
+    await update.message.reply_text(
+        "🔒 <b>Закрытие темы</b>\n\n"
+        "Введите ID темы, которую хотите закрыть:\n\n"
+        "ID темы можно найти через поиск.",
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_cancel_reply_keyboard()
+    )
+
+async def close_topic_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    text = update.message.text.strip()
+    
+    try:
+        topic_id = int(text)
+    except ValueError:
+        await update.message.reply_text(
+            "❌ Введите корректный ID (только цифры).",
+            reply_markup=get_cancel_reply_keyboard()
+        )
+        return
+    
+    if topic_id not in db.topics:
+        await update.message.reply_text(
+            "❌ Тема не найдена.",
+            reply_markup=get_admin_reply_keyboard()
+        )
+        context.user_data.pop('close_state', None)
+        return
+    
+    if not db.topics[topic_id].is_active:
+        await update.message.reply_text(
+            "❌ Тема уже закрыта.",
+            reply_markup=get_admin_reply_keyboard()
+        )
+        context.user_data.pop('close_state', None)
+        return
+
+    db.close_topic(topic_id, user_id)
+    
+    await context.bot.send_message(
+        chat_id=GROUP_ID,
+        message_thread_id=topic_id,
+        text="🔒 Тема закрыта администратором."
+    )
+    
+    keyboard = get_admin_reply_keyboard()
+    context.user_data.pop('close_state', None)
+    
+    await update.message.reply_text(
+        f"✅ Тема {topic_id} закрыта.",
+        reply_markup=keyboard
+    )
+
+# ============ НАЗАД И ОТМЕНА ============
+
+async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user = update.effective_user
+    
+    text = f"👋 <b>Главное меню, {sanitize_text(user.full_name)}!</b>\n\nВыберите действие:"
+    
+    keyboard = get_main_reply_keyboard(
+        is_admin=is_admin(user_id),
+        is_creator=is_creator(user_id)
+    )
     
     await update.message.reply_text(
         text,
         parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        reply_markup=keyboard
     )
 
-async def close_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cancel_operation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if not is_admin(user_id) and not is_creator(user_id):
-        await update.message.reply_text("❌ Нет прав.")
-        return
-
-    args = context.args
-    if not args:
-        keyboard = [
-            [InlineKeyboardButton("🔙 Админ-панель", callback_data="admin_panel")]
-        ]
-        await update.message.reply_text(
-            "🔒 <b>Закрытие темы</b>\n\n"
-            "Используйте команду:\n"
-            "/close_topic <id_темы>\n\n"
-            "ID темы можно найти через /search",
-            parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup(keyboard)
+    
+    context.user_data.pop('request_state', None)
+    context.user_data.pop('request_data', None)
+    context.user_data.pop('add_role', None)
+    context.user_data.pop('add_state', None)
+    context.user_data.pop('remove_state', None)
+    context.user_data.pop('search_state', None)
+    context.user_data.pop('close_state', None)
+    
+    await update.message.reply_text(
+        "❌ Операция отменена.",
+        reply_markup=get_main_reply_keyboard(
+            is_admin=is_admin(user_id),
+            is_creator=is_creator(user_id)
         )
-        return
-
-    try:
-        topic_id = int(args[0])
-        if topic_id not in db.topics:
-            await update.message.reply_text("❌ Тема не найдена.")
-            return
-        if not db.topics[topic_id].is_active:
-            await update.message.reply_text("❌ Тема уже закрыта.")
-            return
-
-        db.close_topic(topic_id, user_id)
-        
-        await context.bot.send_message(
-            chat_id=GROUP_ID,
-            message_thread_id=topic_id,
-            text="🔒 Тема закрыта администратором."
-        )
-        
-        keyboard = [
-            [InlineKeyboardButton("🔙 Админ-панель", callback_data="admin_panel")]
-        ]
-        await update.message.reply_text(
-            f"✅ Тема {topic_id} закрыта.",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-    except ValueError:
-        await update.message.reply_text("❌ ID должен быть числом.")
+    )
 
 # ============ ОБРАБОТЧИК КНОПОК ============
 
@@ -1004,75 +1149,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         data = query.data
 
-        # ===== ГЛАВНОЕ МЕНЮ =====
-        if data == "new_request":
-            if not is_pr_manager(user_id) and not is_creator(user_id):
-                await query.edit_message_text("❌ Нет прав.")
-                return
-            
-            if GROUP_ID == 0:
-                await query.edit_message_text(
-                    "❌ GROUP_ID не настроен!",
-                    reply_markup=get_cancel_keyboard()
-                )
-                return
-            
-            context.user_data['request_state'] = 'SCREENSHOT'
-            context.user_data['request_data'] = {}
-            
-            await query.edit_message_text(
-                "📝 <b>Шаг 1/6: отправьте СКРИНШОТ переписки</b>\n\n"
-                "Отправьте фото:",
-                parse_mode=ParseMode.HTML,
-                reply_markup=get_cancel_keyboard()
-            )
-            return
-
-        elif data == "my_requests":
-            topics = db.get_user_topics(user_id)
-            if not topics:
-                keyboard = [
-                    [InlineKeyboardButton("📝 Создать запрос", callback_data="new_request")],
-                    [InlineKeyboardButton("🔙 Главное меню", callback_data="back_to_main")]
-                ]
-                await query.edit_message_text(
-                    "📋 У вас нет запросов.",
-                    reply_markup=InlineKeyboardMarkup(keyboard)
-                )
-                return
-            
-            topics_list = []
-            for tid in topics:
-                data_topic = db.topics.get(tid)
-                if data_topic:
-                    topics_list.append((tid, data_topic))
-            
-            if not topics_list:
-                keyboard = [
-                    [InlineKeyboardButton("📝 Создать запрос", callback_data="new_request")],
-                    [InlineKeyboardButton("🔙 Главное меню", callback_data="back_to_main")]
-                ]
-                await query.edit_message_text(
-                    "📋 У вас нет запросов.",
-                    reply_markup=InlineKeyboardMarkup(keyboard)
-                )
-                return
-            
-            text = "📋 <b>Ваши запросы:</b>\n\n"
-            for tid, data_topic in topics_list:
-                status = "🟢 Активна" if data_topic.is_active else "🔴 Закрыта"
-                text += f"• <b>{sanitize_text(data_topic.channel_name)}</b>\n"
-                text += f"  ID: <code>{tid}</code> | {status}\n"
-                text += f"  👥 {data_topic.subscribers}\n\n"
-            
-            await query.edit_message_text(
-                text,
-                parse_mode=ParseMode.HTML,
-                reply_markup=get_my_requests_keyboard(topics_list)
-            )
-            return
-
-        # ===== ОТКРЫТИЕ ТЕМЫ =====
         if data.startswith("open_topic_"):
             topic_id = int(data.split("_")[2])
             await open_topic(update, context, topic_id)
@@ -1105,194 +1181,18 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 text="🔒 Тема закрыта администратором."
             )
             
-            keyboard = [
-                [InlineKeyboardButton("📋 Мои запросы", callback_data="my_requests")],
-                [InlineKeyboardButton("🔙 Главное меню", callback_data="back_to_main")]
-            ]
+            keyboard = get_back_to_main_inline_keyboard()
             await query.edit_message_text(
                 f"✅ Тема {topic_id} закрыта.",
-                reply_markup=InlineKeyboardMarkup(keyboard)
+                reply_markup=keyboard
             )
             return
 
-        # ===== АДМИН-ПАНЕЛЬ =====
-        elif data == "admin_panel":
-            if not is_admin(user_id) and not is_creator(user_id):
-                await query.edit_message_text("❌ Нет прав.")
-                return
-            
-            text = (
-                "⚙️ <b>Админ-панель</b>\n\n"
-                "Управление ботом и пользователями.\n"
-                f"👤 Ваша роль: "
-                f"{'Создатель' if is_creator(user_id) else 'Chief' if is_chief(user_id) else 'Dep.Chief'}"
-            )
-            
-            keyboard = [
-                [InlineKeyboardButton("👥 Управление пользователями", callback_data="manage_users")],
-                [InlineKeyboardButton("🔍 Поиск тем", callback_data="search")],
-                [InlineKeyboardButton("🔒 Закрыть тему", callback_data="close_topic")],
-                [InlineKeyboardButton("📊 Статистика", callback_data="statistics")],
-                [InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")]
-            ]
-            
-            await query.edit_message_text(
-                text,
-                parse_mode=ParseMode.HTML,
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-            return
-
-        elif data == "statistics":
-            if not is_admin(user_id) and not is_creator(user_id):
-                await query.edit_message_text("❌ Нет прав.")
-                return
-            
-            active_topics = len([t for t in db.topics.values() if t.is_active])
-            closed_topics = len([t for t in db.topics.values() if not t.is_active])
-            
-            text = (
-                "📊 <b>Статистика бота</b>\n\n"
-                f"👤 <b>Пользователи:</b>\n"
-                f"  • Создатель: 1\n"
-                f"  • Chief: 1\n"
-                f"  • Dep.Chief: {len(db.dep_chiefs)}\n"
-                f"  • PR Managers: {len(db.pr_managers)}\n\n"
-                f"📋 <b>Темы:</b>\n"
-                f"  • Всего: {len(db.topics)}\n"
-                f"  • Активных: {active_topics}\n"
-                f"  • Закрытых: {closed_topics}\n\n"
-                f"💾 <b>База данных:</b>\n"
-                f"  • Файл: {db.file_path}"
-            )
-            
-            keyboard = [
-                [InlineKeyboardButton("🔙 Назад", callback_data="admin_panel")]
-            ]
-            
-            await query.edit_message_text(
-                text,
-                parse_mode=ParseMode.HTML,
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-            return
-
-        # ===== УПРАВЛЕНИЕ ПОЛЬЗОВАТЕЛЯМИ =====
-        elif data == "manage_users":
-            if not is_admin(user_id) and not is_creator(user_id):
-                await query.edit_message_text("❌ Нет прав.")
-                return
-            
-            text = (
-                "👥 <b>Управление пользователями</b>\n\n"
-                f"👤 Ваша роль: "
-                f"{'Создатель' if is_creator(user_id) else 'Chief' if is_chief(user_id) else 'Dep.Chief'}\n\n"
-                f"📋 Всего пользователей: {len(db.pr_managers) + len(db.dep_chiefs) + 2}"
-            )
-            
-            keyboard = []
-            
-            if is_creator(user_id):
-                keyboard.append([InlineKeyboardButton("➕ Добавить Создателя", callback_data="add_creator")])
-                keyboard.append([InlineKeyboardButton("➕ Добавить Chief", callback_data="add_chief")])
-                keyboard.append([InlineKeyboardButton("➕ Добавить Dep.Chief", callback_data="add_dep")])
-                keyboard.append([InlineKeyboardButton("➕ Добавить PR", callback_data="add_pr")])
-            elif is_chief(user_id):
-                keyboard.append([InlineKeyboardButton("➕ Добавить Chief", callback_data="add_chief")])
-                keyboard.append([InlineKeyboardButton("➕ Добавить Dep.Chief", callback_data="add_dep")])
-                keyboard.append([InlineKeyboardButton("➕ Добавить PR", callback_data="add_pr")])
-            elif is_dep_chief(user_id):
-                keyboard.append([InlineKeyboardButton("➕ Добавить PR", callback_data="add_pr")])
-            
-            keyboard.append([InlineKeyboardButton("➖ Удалить пользователя", callback_data="remove_user")])
-            keyboard.append([InlineKeyboardButton("📋 Список пользователей", callback_data="list_users")])
-            keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="admin_panel")])
-            
-            await query.edit_message_text(
-                text,
-                parse_mode=ParseMode.HTML,
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-            return
-
-        elif data == "add_creator":
-            if not is_creator(user_id):
-                await query.edit_message_text("❌ Только Создатель может добавлять Создателя.")
-                return
-            await add_user_start(update, context, "creator")
-            return
-
-        elif data == "add_chief":
-            if not is_creator(user_id) and not is_chief(user_id):
-                await query.edit_message_text("❌ Только Chief или Создатель может добавлять Chief.")
-                return
-            await add_user_start(update, context, "chief")
-            return
-
-        elif data == "add_dep":
-            if not is_creator(user_id) and not is_chief(user_id):
-                await query.edit_message_text("❌ Только Chief или Создатель может добавлять Dep.Chief.")
-                return
-            await add_user_start(update, context, "dep")
-            return
-
-        elif data == "add_pr":
-            await add_user_start(update, context, "pr")
-            return
-
-        elif data == "remove_user":
-            await remove_user_start(update, context)
-            return
-
-        elif data == "list_users":
-            await list_users(update, context)
-            return
-
-        # ===== ПОИСК И ЗАКРЫТИЕ =====
-        elif data == "search":
-            if not is_admin(user_id) and not is_creator(user_id):
-                await query.edit_message_text("❌ Нет прав.")
-                return
-            
-            keyboard = [
-                [InlineKeyboardButton("🔙 Админ-панель", callback_data="admin_panel")]
-            ]
-            
-            await query.edit_message_text(
-                "🔍 <b>Поиск тем</b>\n\n"
-                "Используйте команду:\n"
-                "/search <ключевое_слово>\n\n"
-                "Пример: /search канал",
-                parse_mode=ParseMode.HTML,
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-            return
-
-        elif data == "close_topic":
-            if not is_admin(user_id) and not is_creator(user_id):
-                await query.edit_message_text("❌ Нет прав.")
-                return
-            
-            keyboard = [
-                [InlineKeyboardButton("🔙 Админ-панель", callback_data="admin_panel")]
-            ]
-            
-            await query.edit_message_text(
-                "🔒 <b>Закрытие темы</b>\n\n"
-                "Используйте команду:\n"
-                "/close_topic <id_темы>\n\n"
-                "ID темы можно найти через /search",
-                parse_mode=ParseMode.HTML,
-                reply_markup=InlineKeyboardMarkup(keyboard)
-            )
-            return
-
-        # ===== НАЗАД =====
         elif data == "back_to_main":
             user = query.from_user
-            text = f"👋 <b>Главное меню, {sanitize_text(user.full_name)}!</b>"
+            text = f"👋 <b>Главное меню, {sanitize_text(user.full_name)}!</b>\n\nВыберите действие:"
             
-            keyboard = get_main_keyboard(
+            keyboard = get_main_reply_keyboard(
                 is_admin=is_admin(user_id),
                 is_creator=is_creator(user_id)
             )
@@ -1304,47 +1204,49 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-        # ===== ОТМЕНА И ПРОПУСК =====
-        elif data == "skip":
-            request_data = context.user_data.get('request_data', {})
-            request_data['conditions'] = "Не указаны"
-            context.user_data['request_data'] = request_data
-            await query.edit_message_text("⏭️ Условия пропущены.")
+        elif data == "my_requests":
+            topics = db.get_user_topics(user_id)
+            if not topics:
+                keyboard = get_main_reply_keyboard(
+                    is_admin=is_admin(user_id),
+                    is_creator=is_creator(user_id)
+                )
+                await query.edit_message_text(
+                    "📋 У вас нет запросов.",
+                    reply_markup=keyboard
+                )
+                return
             
-            class FakeUpdate:
-                def __init__(self, user, chat):
-                    self.effective_user = user
-                    self.effective_chat = chat
-                    self.message = type('obj', (object,), {
-                        'reply_text': lambda self, *args, **kwargs: None
-                    })()
-            fake_update = FakeUpdate(query.from_user, query.message.chat)
-            await finish_request(fake_update, context)
-            return
-
-        elif data == "cancel":
-            context.user_data.pop('request_state', None)
-            context.user_data.pop('request_data', None)
-            context.user_data.pop('add_role', None)
-            context.user_data.pop('add_state', None)
-            context.user_data.pop('remove_state', None)
+            topics_list = []
+            for tid in topics:
+                data_topic = db.topics.get(tid)
+                if data_topic:
+                    topics_list.append((tid, data_topic))
             
-            await query.edit_message_text("❌ Операция отменена.")
+            if not topics_list:
+                keyboard = get_main_reply_keyboard(
+                    is_admin=is_admin(user_id),
+                    is_creator=is_creator(user_id)
+                )
+                await query.edit_message_text(
+                    "📋 У вас нет запросов.",
+                    reply_markup=keyboard
+                )
+                return
             
-            keyboard = get_main_keyboard(
-                is_admin=is_admin(user_id),
-                is_creator=is_creator(user_id)
+            text = "📋 <b>Ваши запросы:</b>\n\n"
+            for tid, data_topic in topics_list:
+                status = "🟢 Активна" if data_topic.is_active else "🔴 Закрыта"
+                text += f"• <b>{sanitize_text(data_topic.channel_name)}</b>\n"
+                text += f"  ID: <code>{tid}</code> | {status}\n"
+                text += f"  👥 {data_topic.subscribers}\n\n"
+            
+            await query.edit_message_text(
+                text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=get_my_requests_inline_keyboard(topics_list)
             )
-            user = query.from_user
-            await context.bot.send_message(
-                chat_id=user_id,
-                text=f"👋 Главное меню, {sanitize_text(user.full_name)}",
-                reply_markup=keyboard
-            )
             return
-
-        else:
-            await query.edit_message_text("❌ Неизвестная команда.")
 
     except Exception as e:
         logger.error(f"Callback error: {e}")
