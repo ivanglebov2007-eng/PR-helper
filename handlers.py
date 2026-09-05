@@ -196,7 +196,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     state = context.user_data.get('request_state')
     
-    # Обработка кнопок меню (если нет активного состояния)
+    # ===== ОБРАБОТКА СОСТОЯНИЙ (важно!) =====
+    add_state = context.user_data.get('add_state')
+    remove_state = context.user_data.get('remove_state')
+    search_state = context.user_data.get('search_state')
+    close_state = context.user_data.get('close_state')
+    
+    # Если ожидаем username для добавления
+    if add_state == 'WAITING_USERNAME':
+        await add_user_confirm(update, context)
+        return
+    
+    # Если ожидаем ID для удаления
+    if remove_state == 'WAITING_USER_ID':
+        await remove_user_confirm(update, context)
+        return
+    
+    # Если ожидаем ключевое слово для поиска
+    if search_state == 'WAITING_KEYWORD':
+        await search_topics_confirm(update, context)
+        return
+    
+    # Если ожидаем ID темы для закрытия
+    if close_state == 'WAITING_TOPIC_ID':
+        await close_topic_confirm(update, context)
+        return
+    
+    # ===== ОБРАБОТКА КНОПОК МЕНЮ (если нет активного состояния) =====
     if not state:
         if text == "📝 Создать запрос":
             await new_request_start(update, context)
@@ -252,6 +278,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         return
     
+    # ===== СОЗДАНИЕ ЗАПРОСА (остальная логика) =====
     request_data = context.user_data.get('request_data', {})
     
     if state == 'SCREENSHOT':
@@ -821,6 +848,11 @@ async def add_user_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not role:
         return
     
+    # Если нажали отмену
+    if text == "❌ Отмена":
+        await cancel_operation(update, context)
+        return
+    
     # Пытаемся получить ID пользователя
     new_user_id = None
     username = text.replace('@', '')
@@ -831,7 +863,6 @@ async def add_user_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         # Если не ID, пробуем получить по username
         try:
-            # Пробуем получить chat по username
             chat = await context.bot.get_chat(f"@{username}")
             new_user_id = chat.id
         except Exception as e:
@@ -1161,6 +1192,13 @@ async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user = update.effective_user
     
+    # Сбрасываем все состояния
+    context.user_data.pop('add_state', None)
+    context.user_data.pop('remove_state', None)
+    context.user_data.pop('search_state', None)
+    context.user_data.pop('close_state', None)
+    context.user_data.pop('add_role', None)
+    
     text = f"👋 <b>Главное меню, {sanitize_text(user.full_name)}!</b>\n\nВыберите действие:"
     
     keyboard = get_main_reply_keyboard(
@@ -1177,6 +1215,7 @@ async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cancel_operation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
+    # Сбрасываем ВСЕ состояния
     context.user_data.pop('request_state', None)
     context.user_data.pop('request_data', None)
     context.user_data.pop('add_role', None)
@@ -1244,6 +1283,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         elif data == "back_to_main":
             user = query.from_user
+            
+            # Сбрасываем все состояния
+            context.user_data.pop('add_state', None)
+            context.user_data.pop('remove_state', None)
+            context.user_data.pop('search_state', None)
+            context.user_data.pop('close_state', None)
+            context.user_data.pop('add_role', None)
+            
             text = f"👋 <b>Главное меню, {sanitize_text(user.full_name)}!</b>\n\nВыберите действие:"
             
             keyboard = get_main_reply_keyboard(
