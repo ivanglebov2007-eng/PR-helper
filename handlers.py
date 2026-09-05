@@ -292,6 +292,19 @@ async def finish_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop('request_data', None)
         return
 
+    # Отправляем фото в группу перед созданием темы
+    screenshot_url = request_data.get('screenshot')
+    if screenshot_url:
+        try:
+            await context.bot.send_photo(
+                chat_id=GROUP_ID,
+                photo=screenshot_url,
+                caption=f"📸 Скриншот переписки для запроса: {request_data['channel_name']}"
+            )
+            logger.info("✅ Фото отправлено в группу")
+        except Exception as e:
+            logger.error(f"❌ Ошибка отправки фото: {e}")
+
     topic_id = await create_request_topic(update, context, request_data)
 
     if topic_id:
@@ -350,7 +363,6 @@ async def create_request_topic(update: Update, context: ContextTypes.DEFAULT_TYP
         try:
             chat = await context.bot.get_chat(GROUP_ID)
             logger.info(f"✅ Группа найдена: {chat.title} (ID: {chat.id})")
-            logger.info(f"Тип чата: {chat.type}")
             if hasattr(chat, 'is_forum'):
                 logger.info(f"Режим форума: {chat.is_forum}")
         except Exception as e:
@@ -361,8 +373,6 @@ async def create_request_topic(update: Update, context: ContextTypes.DEFAULT_TYP
         try:
             bot_member = await context.bot.get_chat_member(GROUP_ID, context.bot.id)
             logger.info(f"Статус бота: {bot_member.status}")
-            if hasattr(bot_member, 'can_create_topics'):
-                logger.info(f"Может создавать темы: {bot_member.can_create_topics}")
         except Exception as e:
             logger.error(f"❌ Не могу проверить права бота: {e}")
             return None
@@ -376,7 +386,7 @@ async def create_request_topic(update: Update, context: ContextTypes.DEFAULT_TYP
         topic_id = topic.message_thread_id
         logger.info(f"✅ Тема создана! ID: {topic_id}")
 
-        # Формируем сообщение
+        # Формируем сообщение (без ссылки на скриншот, т.к. фото уже отправлено отдельно)
         text = (
             f"📢 <b>НОВЫЙ ЗАПРОС НА МЕДИА-ПАРТНЕРСТВО</b>\n\n"
             f"👤 <b>PR Менеджер:</b> {sanitize_text(user.full_name)}\n"
@@ -385,9 +395,9 @@ async def create_request_topic(update: Update, context: ContextTypes.DEFAULT_TYP
             f"📌 <b>Канал:</b> {sanitize_text(request_data['channel_name'])}\n"
             f"👥 <b>Подписчиков:</b> {request_data['subscribers']}\n"
             f"🔗 <b>Ссылка:</b> <a href='{request_data['media_link']}'>Открыть</a>\n"
-            f"📎 <b>Скриншот:</b> <a href='{request_data['screenshot']}'>Смотреть</a>\n"
             f"📞 <b>Связь:</b> <a href='{request_data['contact_link']}'>Написать</a>\n"
             f"📝 <b>Условия:</b>\n{sanitize_text(request_data['conditions'])}\n\n"
+            f"📸 <b>Скриншот:</b> (смотрите ниже)\n\n"
             f"⏳ <b>Ожидайте ответа от руководства!</b>"
         )
 
@@ -400,17 +410,90 @@ async def create_request_topic(update: Update, context: ContextTypes.DEFAULT_TYP
             disable_web_page_preview=True
         )
 
-        # Уведомляем руководство
-        mentions = [f"<a href='tg://user?id={CHIEF_ID}'>Chief</a>"]
+        # Получаем информацию о Chief для красивого тега
+        chief_name = "Chief"
+        try:
+            chief_chat = await context.bot.get_chat(CHIEF_ID)
+            if chief_chat.username:
+                chief_name = f"@{chief_chat.username}"
+            elif chief_chat.full_name:
+                chief_name = chief_chat.full_name
+        except:
+            pass
+
+        # Получаем информацию о Dep.Chief для красивых тегов
+        dep_names = []
+        for dep_id in db.dep_chiefs:
+            try:
+                dep_chat = await context.bot.get_chat(dep_id)
+                if dep_chat.username:
+                    dep_names.append(f"@{dep_chat.username}")
+                elif dep_chat.full_name:
+                    dep_names.append(dep_chat.full_name)
+                else:
+                    dep_names.append(f"Dep.Chief ({dep_id})")
+            except:
+                dep_names.append(f"Dep.Chief ({dep_id})")
+
+        # Формируем упоминания
+        mentions = [f"<a href='tg://user?id={CHIEF_ID}'>{chief_name}</a>"]
         for dep_id in db.dep_chiefs:
             mentions.append(f"<a href='tg://user?id={dep_id}'>Dep.Chief</a>")
 
+        # Отправляем уведомление с тегами
         await context.bot.send_message(
             chat_id=GROUP_ID,
             message_thread_id=topic_id,
             text=f"🔔 Внимание! Новый запрос!\n\n{', '.join(mentions)}",
             parse_mode=ParseMode.HTML
         )
+
+        # Закрываем тему для обычных пользователей (делаем её приватной)
+        try:
+            # Получаем всех администраторов группы
+            admins = await context.bot.get_chat_administrators(GROUP_ID)
+            admin_ids = [admin.user.id for admin in admins]
+            
+            # Устанавливаем права темы - запрещаем всем отправлять сообщения
+            await context.bot.set_forum_topic_permissions(
+                chat_id=GROUP_ID,
+                message_thread_id=topic_id,
+                permissions={
+                    "can_send_messages": False,
+                    "can_send_media_messages": False,
+                    "can_send_polls": False,
+                    "can_send_other_messages": False,
+                    "can_add_web_page_previews": False,
+                    "can_change_info": False,
+                    "can_invite_users": False,
+                    "can_pin_messages": False
+                }
+            )
+            
+            # Разрешаем отправку сообщений только администраторам
+            for admin in admins:
+                try:
+                    await context.bot.set_forum_topic_permissions(
+                        chat_id=GROUP_ID,
+                        message_thread_id=topic_id,
+                        user_id=admin.user.id,
+                        permissions={
+                            "can_send_messages": True,
+                            "can_send_media_messages": True,
+                            "can_send_polls": True,
+                            "can_send_other_messages": True,
+                            "can_add_web_page_previews": True,
+                            "can_change_info": True,
+                            "can_invite_users": True,
+                            "can_pin_messages": True
+                        }
+                    )
+                except:
+                    pass
+                    
+            logger.info(f"✅ Тема {topic_id} настроена как приватная (только для админов)")
+        except Exception as e:
+            logger.warning(f"⚠️ Не удалось настроить приватность темы: {e}")
 
         logger.info(f"✅ Тема {topic_id} создана успешно!")
         return topic_id
@@ -464,11 +547,14 @@ async def close_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         db.close_topic(topic_id, user_id)
+        
+        # Отправляем сообщение о закрытии в тему
         await context.bot.send_message(
             chat_id=GROUP_ID,
             message_thread_id=topic_id,
             text="🔒 Тема закрыта администратором."
         )
+        
         await update.message.reply_text(f"✅ Тема {topic_id} закрыта.")
     except ValueError:
         await update.message.reply_text("❌ ID должен быть числом.")
@@ -514,6 +600,15 @@ async def add_pr_by_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
         new_id = int(args[1])
         if db.add_pr_manager(new_id):
             await update.message.reply_text(f"✅ @{username} (ID: {new_id}) добавлен как PR Manager.")
+            
+            # Отправляем уведомление новому PR менеджеру
+            try:
+                await context.bot.send_message(
+                    chat_id=new_id,
+                    text="🎉 Вас добавили как PR Manager! Теперь вы можете создавать запросы через бота.\n\nИспользуйте /start для начала работы."
+                )
+            except:
+                pass
         else:
             await update.message.reply_text("❌ Пользователь уже является PR Manager.")
     except ValueError:
@@ -535,6 +630,15 @@ async def add_dep(update: Update, context: ContextTypes.DEFAULT_TYPE):
         new_id = int(args[1])
         if db.add_dep_chief(new_id):
             await update.message.reply_text(f"✅ @{username} (ID: {new_id}) добавлен как Dep.Chief.")
+            
+            # Отправляем уведомление новому Dep.Chief
+            try:
+                await context.bot.send_message(
+                    chat_id=new_id,
+                    text="🎉 Вас добавили как Dep.Chief PR Manager! Теперь у вас есть права администратора.\n\nИспользуйте /start для начала работы."
+                )
+            except:
+                pass
         else:
             await update.message.reply_text("❌ Пользователь уже является Dep.Chief.")
     except ValueError:
