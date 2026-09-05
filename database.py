@@ -1,8 +1,11 @@
+import os
 import json
 from typing import Dict, List, Set, Optional
 from datetime import datetime
 from dataclasses import dataclass, asdict
 import logging
+
+from config import DATA_FILE
 
 logger = logging.getLogger(__name__)
 
@@ -32,13 +35,18 @@ class RequestData:
 class Database:
     """Класс для работы с базой данных"""
     
-    def __init__(self, file_path: str = 'data.json'):
+    def __init__(self, file_path: str = DATA_FILE):
+        # Создаем папку для данных, если её нет
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
+        
         self.file_path = file_path
         self.pr_managers: Set[int] = set()
         self.dep_chiefs: Set[int] = set()
         self.topics: Dict[int, RequestData] = {}
         self.user_requests: Dict[int, List[int]] = {}
         self.pending_requests: Dict[int, dict] = {}
+        
+        self.load()
         
     def load(self):
         """Загрузка данных из файла"""
