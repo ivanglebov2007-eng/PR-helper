@@ -243,6 +243,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     add_state = context.user_data.get('add_state')
     remove_state = context.user_data.get('remove_state')
     search_state = context.user_data.get('search_state')
+    
     if add_state == 'WAITING_USERNAME':
         await add_user_confirm(update, context)
         return
@@ -252,6 +253,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if search_state == 'WAITING_KEYWORD':
         await search_topics_confirm(update, context)
         return
+    
     if not state:
         if text == "📝 Создать запрос":
             await new_request_start(update, context)
@@ -309,7 +311,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await finish_request(update, context)
             return
         return
+    
     request_data = context.user_data.get('request_data', {})
+    
     if state == 'SCREENSHOT':
         photo = update.message.photo
         if not photo:
@@ -319,11 +323,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
         try:
-            file = await photo[-1].get_file()
+            photo_obj = photo[-1]
+            file_id = photo_obj.file_id
+            file_unique_id = photo_obj.file_unique_id
+            file = await photo_obj.get_file()
             file_url = file.file_path
+            
             request_data['screenshot'] = file_url
+            request_data['screenshot_info'] = {
+                'file_id': file_id,
+                'file_unique_id': file_unique_id,
+                'caption': f"📸 Скриншот для запроса: {request_data.get('channel_name', 'канал')}"
+            }
             context.user_data['request_data'] = request_data
             context.user_data['request_state'] = 'MEDIA_LINK'
+            
             await update.message.reply_text(
                 "✅ Скриншот получен!\n\n"
                 "📎 <b>Шаг 2/6: отправьте ссылку на канал</b>\n"
@@ -339,6 +353,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=get_cancel_reply_keyboard()
             )
         return
+    
     if state == 'MEDIA_LINK':
         if not validate_media_link(text):
             await update.message.reply_text(
@@ -359,6 +374,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=get_cancel_reply_keyboard()
         )
         return
+    
     if state == 'CHANNEL_NAME':
         if not text:
             await update.message.reply_text(
@@ -377,6 +393,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=get_cancel_reply_keyboard()
         )
         return
+    
     if state == 'SUBSCRIBERS':
         try:
             subs = int(text.replace(' ', '').replace(',', '').replace('.', ''))
@@ -401,6 +418,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=get_cancel_reply_keyboard()
         )
         return
+    
     if state == 'CONTACT_LINK':
         if not text:
             await update.message.reply_text(
@@ -421,6 +439,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=get_skip_reply_keyboard()
         )
         return
+    
     if state == 'CONDITIONS':
         request_data['conditions'] = sanitize_text(text) if text else "Не указаны"
         context.user_data['request_data'] = request_data
@@ -429,7 +448,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def finish_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
+    
     request_data = context.user_data.get('request_data', {})
+    
     missing = [f for f in REQUIRED_FIELDS if f not in request_data or not request_data[f]]
     if missing:
         await update.message.reply_text(
@@ -443,44 +464,66 @@ async def finish_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop('request_state', None)
         context.user_data.pop('request_data', None)
         return
-    screenshot_url = request_data.get('screenshot')
+
+    screenshot_info = request_data.get('screenshot_info', {})
+    photo_file_id = screenshot_info.get('file_id')
+    photo_caption = screenshot_info.get('caption', f"📸 Скриншот для запроса: {request_data['channel_name']}")
+    
     photo_sent = False
-    if screenshot_url:
+    
+    if photo_file_id:
         try:
             sent_photo = await context.bot.send_photo(
                 chat_id=GROUP_ID,
-                photo=screenshot_url,
-                caption=f"📸 Скриншот для запроса: {request_data['channel_name']}",
+                photo=photo_file_id,
+                caption=photo_caption,
                 parse_mode=ParseMode.HTML
             )
             photo_sent = True
-            logger.info("✅ Фото отправлено в группу")
+            logger.info("✅ Фото отправлено в группу по file_id")
         except Exception as e:
-            logger.error(f"❌ Ошибка отправки фото: {e}")
+            logger.error(f"❌ Ошибка отправки фото по file_id: {e}")
             try:
                 sent_doc = await context.bot.send_document(
                     chat_id=GROUP_ID,
-                    document=screenshot_url,
-                    caption=f"📸 Скриншот для запроса: {request_data['channel_name']}"
+                    document=photo_file_id,
+                    caption=photo_caption
                 )
                 photo_sent = True
                 logger.info("✅ Фото отправлено как документ")
             except Exception as e2:
                 logger.error(f"❌ Ошибка отправки документа: {e2}")
+    
+    if not photo_sent:
+        screenshot_url = request_data.get('screenshot')
+        if screenshot_url:
+            try:
+                await context.bot.send_photo(
+                    chat_id=GROUP_ID,
+                    photo=screenshot_url,
+                    caption=photo_caption,
+                    parse_mode=ParseMode.HTML
+                )
+                photo_sent = True
+                logger.info("✅ Фото отправлено по ссылке")
+            except Exception as e:
+                logger.error(f"❌ Ошибка отправки фото по ссылке: {e}")
                 try:
                     await context.bot.send_message(
                         chat_id=GROUP_ID,
-                        text=f"📸 Скриншот для запроса: {request_data['channel_name']}\n{screenshot_url}",
+                        text=f"📸 {photo_caption}\n{screenshot_url}",
                         parse_mode=ParseMode.HTML
                     )
                     photo_sent = True
                     logger.info("✅ Ссылка на скриншот отправлена")
                 except Exception as e3:
                     logger.error(f"❌ Ошибка отправки ссылки: {e3}")
-    topic_id = await create_request_topic(update, context, request_data, photo_sent, screenshot_url)
+
+    topic_id = await create_request_topic(update, context, request_data, photo_sent, request_data.get('screenshot'))
+
     if topic_id:
         request_obj = RequestData(
-            screenshot=screenshot_url or "Не указан",
+            screenshot=request_data.get('screenshot', 'Не указан'),
             media_link=request_data['media_link'],
             channel_name=request_data['channel_name'],
             subscribers=request_data['subscribers'],
@@ -631,6 +674,10 @@ async def create_request_topic(update: Update, context: ContextTypes.DEFAULT_TYP
     except Exception as e:
         logger.error(f"❌ Ошибка создания темы: {e}")
         return None
+
+# ============ ОСТАЛЬНЫЕ ФУНКЦИИ (my_requests, admin_panel, статистика, управление пользователями и т.д.) ============
+# Они остаются без изменений из предыдущей версии
+# (полный код всех функций есть в предыдущих сообщениях)
 
 async def my_requests(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
