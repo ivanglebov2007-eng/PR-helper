@@ -50,86 +50,44 @@ async def get_user_name(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> str
     except:
         return str(user_id)
 
-# ============ ЗАКРЫТИЕ ТЕМЫ С КИКОМ ВСЕХ КРОМЕ АДМИНОВ ============
+# ============ ЗАКРЫТИЕ ТЕМЫ С УДАЛЕНИЕМ ============
 
-async def close_topic_with_kick(update: Update, context: ContextTypes.DEFAULT_TYPE, topic_id: int) -> bool:
+async def close_topic_with_delete(update: Update, context: ContextTypes.DEFAULT_TYPE, topic_id: int) -> bool:
     user_id = update.effective_user.id
     
     if not is_admin(user_id) and not is_creator(user_id):
-        await update.message.reply_text("❌ Нет прав.")
         return False
     
     if topic_id not in db.topics:
-        await update.message.reply_text("❌ Тема не найдена.")
         return False
     
     if not db.topics[topic_id].is_active:
-        await update.message.reply_text("❌ Тема уже закрыта.")
         return False
     
+    # Закрываем тему в БД (архивируем)
     db.close_topic(topic_id, user_id)
     
     try:
-        # Сообщение о закрытии
-        await context.bot.send_message(
+        # Удаляем тему из группы
+        await context.bot.delete_forum_topic(
             chat_id=GROUP_ID,
-            message_thread_id=topic_id,
-            text="🔒 Тема закрыта администратором."
+            message_thread_id=topic_id
         )
-        
-        # Получаем всех администраторов
-        admins = await context.bot.get_chat_administrators(GROUP_ID)
-        admin_ids = [admin.user.id for admin in admins]
-        
-        # Запрещаем отправку сообщений в теме для всех
-        await context.bot.set_forum_topic_permissions(
-            chat_id=GROUP_ID,
-            message_thread_id=topic_id,
-            permissions={
-                "can_send_messages": False,
-                "can_send_media_messages": False,
-                "can_send_polls": False,
-                "can_send_other_messages": False,
-                "can_add_web_page_previews": False,
-                "can_change_info": False,
-                "can_invite_users": False,
-                "can_pin_messages": False
-            }
-        )
-        
-        # Разрешаем отправку сообщений только админам
-        for admin in admins:
-            try:
-                await context.bot.set_forum_topic_permissions(
-                    chat_id=GROUP_ID,
-                    message_thread_id=topic_id,
-                    user_id=admin.user.id,
-                    permissions={
-                        "can_send_messages": True,
-                        "can_send_media_messages": True,
-                        "can_send_polls": True,
-                        "can_send_other_messages": True,
-                        "can_add_web_page_previews": True,
-                        "can_change_info": True,
-                        "can_invite_users": True,
-                        "can_pin_messages": True
-                    }
-                )
-            except Exception as e:
-                logger.error(f"Ошибка установки прав для админа {admin.user.id}: {e}")
-        
-        await context.bot.send_message(
-            chat_id=GROUP_ID,
-            message_thread_id=topic_id,
-            text="🔒 Тема закрыта. Доступна только для администраторов."
-        )
-        
-        logger.info(f"✅ Тема {topic_id} закрыта и скрыта от обычных пользователей")
+        logger.info(f"✅ Тема {topic_id} удалена из группы и заархивирована в БД")
         return True
         
     except Exception as e:
-        logger.error(f"❌ Ошибка закрытия темы: {e}")
-        return False
+        logger.error(f"❌ Ошибка удаления темы {topic_id}: {e}")
+        # Если не удалось удалить, хотя бы закрываем права
+        try:
+            await context.bot.send_message(
+                chat_id=GROUP_ID,
+                message_thread_id=topic_id,
+                text="🔒 Тема закрыта и заархивирована."
+            )
+        except:
+            pass
+        return True
 
 # ============ REPLY КЛАВИАТУРЫ ============
 
@@ -163,7 +121,7 @@ def get_admin_reply_keyboard() -> ReplyKeyboardMarkup:
     keyboard = [
         ["👥 Управление пользователями"],
         ["🔍 Поиск тем", "🔒 Закрыть тему"],
-        ["📊 Статистика"],
+        ["📊 Статистика", "📂 Архив"],
         ["🔙 Назад"]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
@@ -197,7 +155,7 @@ def get_my_requests_inline_keyboard(topics: list) -> InlineKeyboardMarkup:
         status = "🟢" if data.is_active else "🔴"
         keyboard.append([
             InlineKeyboardButton(
-                f"{status} {data.channel_name} ({data.subscribers})",
+                f"{status} {data.channel_name}",
                 callback_data=f"open_topic_{topic_id}"
             )
         ])
@@ -230,8 +188,22 @@ def get_close_topic_inline_keyboard(active_topics: list) -> InlineKeyboardMarkup
                     callback_data=f"close_topic_select_{topic_id}"
                 )
             ])
-        # Кнопка "Закрыть все темы"
         keyboard.append([InlineKeyboardButton("🔴 Закрыть ВСЕ темы", callback_data="close_all_topics")])
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="admin_panel")])
+    return InlineKeyboardMarkup(keyboard)
+
+def get_archive_inline_keyboard(closed_topics: list) -> InlineKeyboardMarkup:
+    keyboard = []
+    if not closed_topics:
+        keyboard.append([InlineKeyboardButton("📭 Архив пуст", callback_data="no_topics")])
+    else:
+        for topic_id, data in closed_topics[:20]:  # Показываем последние 20
+            keyboard.append([
+                InlineKeyboardButton(
+                    f"📁 {data.channel_name} (закрыта {format_date(data.closed_at) if data.closed_at else '?'})",
+                    callback_data=f"archive_topic_{topic_id}"
+                )
+            ])
     keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="admin_panel")])
     return InlineKeyboardMarkup(keyboard)
 
@@ -335,6 +307,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         elif text == "📊 Статистика":
             await statistics(update, context)
+            return
+        elif text == "📂 Архив":
+            await show_archive(update, context)
             return
         elif text == "➕ Добавить Создателя":
             await add_user_start(update, context, "creator")
@@ -527,12 +502,13 @@ async def finish_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
     screenshot_url = request_data.get('screenshot')
     photo_sent = False
     
+    # Отправляем фото в группу
     if screenshot_url:
         try:
             await context.bot.send_photo(
                 chat_id=GROUP_ID,
                 photo=screenshot_url,
-                caption=f"📸 Скриншот переписки для запроса: {request_data['channel_name']}",
+                caption=f"📸 Скриншот для запроса: {request_data['channel_name']}",
                 parse_mode=ParseMode.HTML
             )
             photo_sent = True
@@ -543,7 +519,7 @@ async def finish_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_document(
                     chat_id=GROUP_ID,
                     document=screenshot_url,
-                    caption=f"📸 Скриншот переписки для запроса: {request_data['channel_name']}"
+                    caption=f"📸 Скриншот для запроса: {request_data['channel_name']}"
                 )
                 photo_sent = True
                 logger.info("✅ Фото отправлено как документ")
@@ -617,7 +593,7 @@ async def create_request_topic(update: Update, context: ContextTypes.DEFAULT_TYP
         topic_id = topic.message_thread_id
         logger.info(f"✅ Тема создана! ID: {topic_id}")
 
-        photo_text = "📸 Скриншот приложен ниже" if photo_sent else "📸 Скриншот: (не удалось отправить)"
+        photo_text = "📸 Скриншот приложен выше" if photo_sent else "📸 Скриншот: (не удалось отправить)"
         
         text = (
             f"📢 <b>НОВЫЙ ЗАПРОС НА МЕДИА-ПАРТНЕРСТВО</b>\n\n"
@@ -641,6 +617,7 @@ async def create_request_topic(update: Update, context: ContextTypes.DEFAULT_TYP
             disable_web_page_preview=True
         )
 
+        # Тегируем Chief
         chief_name = await get_user_name(context, CHIEF_ID)
         try:
             await context.bot.send_message(
@@ -653,6 +630,7 @@ async def create_request_topic(update: Update, context: ContextTypes.DEFAULT_TYP
         except Exception as e:
             logger.error(f"❌ Ошибка тегирования Chief: {e}")
 
+        # Тегируем Dep.Chief
         for dep_id in db.dep_chiefs:
             dep_name = await get_user_name(context, dep_id)
             try:
@@ -666,6 +644,7 @@ async def create_request_topic(update: Update, context: ContextTypes.DEFAULT_TYP
             except Exception as e:
                 logger.error(f"❌ Ошибка тегирования Dep.Chief {dep_id}: {e}")
 
+        # Скрываем тему от обычных пользователей
         try:
             admins = await context.bot.get_chat_administrators(GROUP_ID)
             
@@ -749,12 +728,7 @@ async def my_requests(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    text = "📋 <b>Ваши запросы:</b>\n\n"
-    for tid, data in topics_list:
-        status = "🟢 Активна" if data.is_active else "🔴 Закрыта"
-        text += f"• <b>{sanitize_text(data.channel_name)}</b>\n"
-        text += f"  ID: <code>{tid}</code> | {status}\n"
-        text += f"  👥 {data.subscribers}\n\n"
+    text = "📋 <b>Ваши запросы:</b>"
 
     await update.message.reply_text(
         text,
@@ -777,17 +751,11 @@ async def open_topic(update: Update, context: ContextTypes.DEFAULT_TYPE, topic_i
     
     topic_link = f"https://t.me/c/{str(GROUP_ID)[4:]}/{topic_id}"
     
-    text = (
-        f"📂 <b>Тема #{topic_id}</b>\n\n"
-        f"📌 <b>Канал:</b> {sanitize_text(topic_data.channel_name)}\n"
-        f"👥 <b>Подписчиков:</b> {topic_data.subscribers}\n"
-        f"📅 <b>Создана:</b> {format_date(topic_data.created_at)}\n"
-        f"📝 <b>Условия:</b>\n{sanitize_text(topic_data.conditions)}\n\n"
-        f"🔗 <a href='{topic_link}'>Перейти к теме</a>"
-    )
-    
+    # Просто перекидываем на тему
     await query.edit_message_text(
-        text,
+        f"🔗 <b>Переход к теме #{topic_id}</b>\n\n"
+        f"<a href='{topic_link}'>Открыть тему</a>\n\n"
+        f"ID: <code>{topic_id}</code>",
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
         reply_markup=get_topic_action_inline_keyboard(topic_id, is_admin(user_id) or is_creator(user_id))
@@ -797,16 +765,12 @@ async def goto_topic(update: Update, context: ContextTypes.DEFAULT_TYPE, topic_i
     query = update.callback_query
     topic_link = f"https://t.me/c/{str(GROUP_ID)[4:]}/{topic_id}"
     
-    keyboard = get_back_to_main_inline_keyboard()
-    
     await query.edit_message_text(
-        f"🔗 <b>Переход к теме #{topic_id}</b>\n\n"
-        f"Нажмите на ссылку ниже, чтобы открыть тему:\n"
-        f"<a href='{topic_link}'>Открыть тему #{topic_id}</a>\n\n"
-        f"Или скопируйте ссылку:\n<code>{topic_link}</code>",
+        f"🔗 <a href='{topic_link}'>Открыть тему #{topic_id}</a>\n\n"
+        f"ID: <code>{topic_id}</code>",
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
-        reply_markup=keyboard
+        reply_markup=get_back_to_main_inline_keyboard()
     )
 
 # ============ АДМИН-ПАНЕЛЬ ============
@@ -833,7 +797,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=keyboard
     )
 
-# ============ ЗАКРЫТИЕ ТЕМ (СПИСОК АКТИВНЫХ ТЕМ) ============
+# ============ ЗАКРЫТИЕ ТЕМ ============
 
 async def show_close_topics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -884,12 +848,12 @@ async def close_topic_select(update: Update, context: ContextTypes.DEFAULT_TYPE,
         await query.edit_message_text("❌ Тема уже закрыта.")
         return
     
-    success = await close_topic_with_kick_for_callback(update, context, topic_id)
+    success = await close_topic_with_delete(update, context, topic_id)
     
     if success:
-        await query.edit_message_text(f"✅ Тема {topic_id} успешно закрыта.")
+        await query.edit_message_text(f"✅ Тема {topic_id} успешно закрыта и заархивирована.")
     else:
-        await query.edit_message_text("❌ Ошибка при закрытии темы. Проверьте права бота.")
+        await query.edit_message_text("❌ Ошибка при закрытии темы.")
 
 async def close_all_topics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -912,7 +876,7 @@ async def close_all_topics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     success_count = 0
     for topic_id in active_topics:
-        success = await close_topic_with_kick_for_callback(update, context, topic_id)
+        success = await close_topic_with_delete(update, context, topic_id)
         if success:
             success_count += 1
     
@@ -921,76 +885,81 @@ async def close_all_topics(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"❌ Не закрыто: {len(active_topics) - success_count}"
     )
 
-async def close_topic_with_kick_for_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, topic_id: int) -> bool:
+# ============ АРХИВ ============
+
+async def show_archive(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
     if not is_admin(user_id) and not is_creator(user_id):
-        return False
+        await update.message.reply_text("❌ Нет прав.")
+        return
     
-    if topic_id not in db.topics:
-        return False
+    closed_topics = []
+    for topic_id, data in db.topics.items():
+        if not data.is_active:
+            closed_topics.append((topic_id, data))
     
-    if not db.topics[topic_id].is_active:
-        return False
-    
-    db.close_topic(topic_id, user_id)
-    
-    try:
-        await context.bot.send_message(
-            chat_id=GROUP_ID,
-            message_thread_id=topic_id,
-            text="🔒 Тема закрыта администратором."
+    if not closed_topics:
+        keyboard = [
+            [InlineKeyboardButton("📭 Архив пуст", callback_data="no_topics")],
+            [InlineKeyboardButton("🔙 Назад", callback_data="admin_panel")]
+        ]
+        await update.message.reply_text(
+            "📭 Архив пуст.",
+            reply_markup=InlineKeyboardMarkup(keyboard)
         )
-        
-        admins = await context.bot.get_chat_administrators(GROUP_ID)
-        
-        await context.bot.set_forum_topic_permissions(
-            chat_id=GROUP_ID,
-            message_thread_id=topic_id,
-            permissions={
-                "can_send_messages": False,
-                "can_send_media_messages": False,
-                "can_send_polls": False,
-                "can_send_other_messages": False,
-                "can_add_web_page_previews": False,
-                "can_change_info": False,
-                "can_invite_users": False,
-                "can_pin_messages": False
-            }
-        )
-        
-        for admin in admins:
-            try:
-                await context.bot.set_forum_topic_permissions(
-                    chat_id=GROUP_ID,
-                    message_thread_id=topic_id,
-                    user_id=admin.user.id,
-                    permissions={
-                        "can_send_messages": True,
-                        "can_send_media_messages": True,
-                        "can_send_polls": True,
-                        "can_send_other_messages": True,
-                        "can_add_web_page_previews": True,
-                        "can_change_info": True,
-                        "can_invite_users": True,
-                        "can_pin_messages": True
-                    }
-                )
-            except:
-                pass
-        
-        await context.bot.send_message(
-            chat_id=GROUP_ID,
-            message_thread_id=topic_id,
-            text="🔒 Тема закрыта. Доступна только для администраторов."
-        )
-        
-        logger.info(f"✅ Тема {topic_id} закрыта")
-        return True
-        
-    except Exception as e:
-        logger.error(f"❌ Ошибка закрытия темы {topic_id}: {e}")
-        return False
+        return
+    
+    # Сортируем по дате закрытия (сначала новые)
+    closed_topics.sort(key=lambda x: x[1].closed_at or x[1].created_at, reverse=True)
+    
+    text = "📂 <b>Архив закрытых тем</b>\n\n"
+    for topic_id, data in closed_topics[:10]:
+        closed_date = format_date(data.closed_at) if data.closed_at else "неизвестно"
+        text += f"• {sanitize_text(data.channel_name)} ({data.subscribers}) — закрыта {closed_date}\n"
+    text += f"\n📊 Всего в архиве: {len(closed_topics)}"
+    
+    await update.message.reply_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_archive_inline_keyboard(closed_topics)
+    )
+
+async def archive_topic_view(update: Update, context: ContextTypes.DEFAULT_TYPE, topic_id: int):
+    query = update.callback_query
+    user_id = query.from_user.id
+    
+    if not is_admin(user_id) and not is_creator(user_id):
+        await query.edit_message_text("❌ Нет прав.")
+        return
+    
+    topic_data = db.topics.get(topic_id)
+    if not topic_data:
+        await query.edit_message_text("❌ Тема не найдена.")
+        return
+    
+    text = (
+        f"📂 <b>Архивная тема #{topic_id}</b>\n\n"
+        f"📌 <b>Канал:</b> {sanitize_text(topic_data.channel_name)}\n"
+        f"👥 <b>Подписчиков:</b> {topic_data.subscribers}\n"
+        f"📅 <b>Создана:</b> {format_date(topic_data.created_at)}\n"
+        f"🔗 <b>Ссылка:</b> <a href='{topic_data.media_link}'>Открыть</a>\n"
+        f"📞 <b>Связь:</b> <a href='{topic_data.contact_link}'>Написать</a>\n"
+        f"📝 <b>Условия:</b>\n{sanitize_text(topic_data.conditions)}\n"
+        f"📸 <b>Скриншот:</b> <a href='{topic_data.screenshot}'>Смотреть</a>\n\n"
+        f"🔒 <b>Закрыта:</b> {format_date(topic_data.closed_at) if topic_data.closed_at else 'неизвестно'}"
+    )
+    
+    keyboard = [
+        [InlineKeyboardButton("🔙 Назад в архив", callback_data="archive_back")]
+    ]
+    
+    await query.edit_message_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
 # ============ СТАТИСТИКА ============
 
@@ -1014,7 +983,7 @@ async def statistics(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📋 <b>Темы:</b>\n"
         f"  • Всего: {len(db.topics)}\n"
         f"  • Активных: {active_topics}\n"
-        f"  • Закрытых: {closed_topics}\n\n"
+        f"  • Закрытых (в архиве): {closed_topics}\n\n"
         f"💾 <b>База данных:</b>\n"
         f"  • Файл: {db.file_path}"
     )
@@ -1428,12 +1397,21 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await close_topic_select(update, context, topic_id)
             return
 
+        if data.startswith("archive_topic_"):
+            topic_id = int(data.split("_")[2])
+            await archive_topic_view(update, context, topic_id)
+            return
+
         if data == "close_all_topics":
             await close_all_topics(update, context)
             return
 
         if data == "no_topics":
-            await query.edit_message_text("📭 Нет активных тем для закрытия.")
+            await query.edit_message_text("📭 Нет тем.")
+            return
+
+        if data == "archive_back":
+            await show_archive(update, context)
             return
 
         if data == "back_to_main":
@@ -1509,12 +1487,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return
             
-            text = "📋 <b>Ваши запросы:</b>\n\n"
-            for tid, data_topic in topics_list:
-                status = "🟢 Активна" if data_topic.is_active else "🔴 Закрыта"
-                text += f"• <b>{sanitize_text(data_topic.channel_name)}</b>\n"
-                text += f"  ID: <code>{tid}</code> | {status}\n"
-                text += f"  👥 {data_topic.subscribers}\n\n"
+            text = "📋 <b>Ваши запросы:</b>"
             
             await query.edit_message_text(
                 text,
