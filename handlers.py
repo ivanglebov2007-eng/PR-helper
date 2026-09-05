@@ -329,7 +329,6 @@ async def finish_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if screenshot_url:
         try:
-            # Пробуем отправить фото
             await context.bot.send_photo(
                 chat_id=GROUP_ID,
                 photo=screenshot_url,
@@ -340,7 +339,6 @@ async def finish_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.info("✅ Фото отправлено в группу")
         except Exception as e:
             logger.error(f"❌ Ошибка отправки фото: {e}")
-            # Пробуем отправить как документ
             try:
                 await context.bot.send_document(
                     chat_id=GROUP_ID,
@@ -352,7 +350,6 @@ async def finish_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e2:
                 logger.error(f"❌ Ошибка отправки документа: {e2}")
 
-    # Создаем тему
     topic_id = await create_request_topic(update, context, request_data, photo_sent)
 
     if topic_id:
@@ -394,15 +391,12 @@ async def create_request_topic(update: Update, context: ContextTypes.DEFAULT_TYP
             logger.error("GROUP_ID не настроен!")
             return None
 
-        # Проверяем доступ к группе
         chat = await context.bot.get_chat(GROUP_ID)
         logger.info(f"✅ Группа: {chat.title} (ID: {chat.id})")
 
-        # Проверяем права бота
         bot_member = await context.bot.get_chat_member(GROUP_ID, context.bot.id)
         logger.info(f"Статус бота: {bot_member.status}")
 
-        # Создаем тему
         logger.info(f"📝 Создаю тему: {topic_title[:255]}")
         topic = await context.bot.create_forum_topic(
             chat_id=GROUP_ID,
@@ -411,7 +405,6 @@ async def create_request_topic(update: Update, context: ContextTypes.DEFAULT_TYP
         topic_id = topic.message_thread_id
         logger.info(f"✅ Тема создана! ID: {topic_id}")
 
-        # Формируем сообщение
         photo_text = "📸 Скриншот приложен ниже" if photo_sent else "📸 Скриншот: (не удалось отправить)"
         
         text = (
@@ -428,7 +421,6 @@ async def create_request_topic(update: Update, context: ContextTypes.DEFAULT_TYP
             f"⏳ <b>Ожидайте ответа от руководства!</b>"
         )
 
-        # Отправляем сообщение в тему
         await context.bot.send_message(
             chat_id=GROUP_ID,
             message_thread_id=topic_id,
@@ -439,11 +431,10 @@ async def create_request_topic(update: Update, context: ContextTypes.DEFAULT_TYP
 
         # === ТЕГИРУЕМ CHIEF ===
         try:
-            chief_mention = f"<a href='tg://user?id={CHIEF_ID}'>Chief</a>"
             await context.bot.send_message(
                 chat_id=GROUP_ID,
                 message_thread_id=topic_id,
-                text=f"🔔 {chief_mention}, новый запрос!",
+                text=f"🔔 <a href='tg://user?id={CHIEF_ID}'>Chief</a>, новый запрос!",
                 parse_mode=ParseMode.HTML
             )
             logger.info("✅ Chief уведомлён")
@@ -453,11 +444,10 @@ async def create_request_topic(update: Update, context: ContextTypes.DEFAULT_TYP
         # === ТЕГИРУЕМ DEP.CHIEF ===
         for dep_id in db.dep_chiefs:
             try:
-                dep_mention = f"<a href='tg://user?id={dep_id}'>Dep.Chief</a>"
                 await context.bot.send_message(
                     chat_id=GROUP_ID,
                     message_thread_id=topic_id,
-                    text=f"🔔 {dep_mention}, новый запрос!",
+                    text=f"🔔 <a href='tg://user?id={dep_id}'>Dep.Chief</a>, новый запрос!",
                     parse_mode=ParseMode.HTML
                 )
                 logger.info(f"✅ Dep.Chief {dep_id} уведомлён")
@@ -466,11 +456,8 @@ async def create_request_topic(update: Update, context: ContextTypes.DEFAULT_TYP
 
         # === СКРЫВАЕМ ТЕМУ ОТ ОБЫЧНЫХ ПОЛЬЗОВАТЕЛЕЙ ===
         try:
-            # Получаем всех администраторов
             admins = await context.bot.get_chat_administrators(GROUP_ID)
-            admin_ids = [admin.user.id for admin in admins]
             
-            # Запрещаем всем отправлять сообщения в теме
             await context.bot.set_forum_topic_permissions(
                 chat_id=GROUP_ID,
                 message_thread_id=topic_id,
@@ -486,7 +473,6 @@ async def create_request_topic(update: Update, context: ContextTypes.DEFAULT_TYP
                 }
             )
             
-            # Разрешаем только админам
             for admin in admins:
                 try:
                     await context.bot.set_forum_topic_permissions(
@@ -834,6 +820,8 @@ async def remove_user_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("❌ Пользователь не найден.")
     
     context.user_data.pop('remove_state', None)
+
+# ============ СПИСОК ПОЛЬЗОВАТЕЛЕЙ ============
 
 async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
