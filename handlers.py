@@ -39,46 +39,17 @@ def is_creator(user_id: int) -> bool:
 # ============ КЛАВИАТУРЫ ============
 
 def get_main_keyboard(is_admin: bool = False, is_creator: bool = False) -> InlineKeyboardMarkup:
-    """Главное меню"""
+    """Главное меню - ВОЗВРАЩАЕТ КЛАВИАТУРУ"""
     keyboard = [
         [InlineKeyboardButton("📝 Создать запрос", callback_data="new_request")],
         [InlineKeyboardButton("📋 Мои запросы", callback_data="my_requests")],
     ]
     if is_admin or is_creator:
         keyboard.append([InlineKeyboardButton("⚙️ Админ-панель", callback_data="admin_panel")])
-    return InlineKeyboardMarkup(keyboard)
-
-def get_cancel_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="cancel")]])
-
-def get_skip_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("⏭️ Пропустить", callback_data="skip")],
-        [InlineKeyboardButton("❌ Отмена", callback_data="cancel")]
-    ])
-
-def get_my_requests_keyboard(topics: list) -> InlineKeyboardMarkup:
-    """Клавиатура со списком запросов пользователя"""
-    keyboard = []
-    for topic_id, data in topics:
-        status = "🟢" if data.is_active else "🔴"
-        keyboard.append([
-            InlineKeyboardButton(
-                f"{status} {data.channel_name} ({data.subscribers})",
-                callback_data=f"open_topic_{topic_id}"
-            )
-        ])
-    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")])
-    return InlineKeyboardMarkup(keyboard)
-
-def get_topic_action_keyboard(topic_id: int, is_admin: bool = False) -> InlineKeyboardMarkup:
-    """Клавиатура для действий с темой"""
-    keyboard = [
-        [InlineKeyboardButton("📂 Перейти к теме", callback_data=f"goto_topic_{topic_id}")],
-    ]
-    if is_admin:
-        keyboard.append([InlineKeyboardButton("🔒 Закрыть тему", callback_data=f"close_topic_{topic_id}")])
-    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="my_requests")])
+    
+    # ПРОВЕРКА: выводим в лог, что клавиатура создана
+    logger.info(f"Создана клавиатура: {keyboard}")
+    
     return InlineKeyboardMarkup(keyboard)
 
 # ============ КОМАНДА /start ============
@@ -94,21 +65,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    text = f"👋 <b>Добро пожаловать, {sanitize_text(user.full_name)}!</b>\n\n"
-    if is_creator(user_id):
-        text += "🤖 <b>Вы — Создатель</b>\nДоступны все функции."
-    elif is_admin(user_id):
-        text += "👑 <b>Вы — администратор</b>"
-    else:
-        text += "📝 <b>Вы — PR Manager</b>"
-
+    text = f"👋 <b>Главное меню, {sanitize_text(user.full_name)}!</b>"
+    
+    # ПОЛУЧАЕМ КЛАВИАТУРУ
+    keyboard = get_main_keyboard(
+        is_admin=is_admin(user_id),
+        is_creator=is_creator(user_id)
+    )
+    
+    # ОТПРАВЛЯЕМ С КЛАВИАТУРОЙ
     await update.message.reply_text(
         text,
         parse_mode=ParseMode.HTML,
-        reply_markup=get_main_keyboard(
-            is_admin=is_admin(user_id),
-            is_creator=is_creator(user_id)
-        )
+        reply_markup=keyboard  # <--- ЭТО ГЛАВНОЕ!
     )
 
 # ============ СОЗДАНИЕ ЗАПРОСА ============
