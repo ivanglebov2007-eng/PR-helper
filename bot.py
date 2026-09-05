@@ -38,12 +38,16 @@ async def main():
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CommandHandler('new_request', new_request_start))
     application.add_handler(CommandHandler('my_requests', my_requests))
-    application.add_handler(CommandHandler('close_topic', close_topic))
-    application.add_handler(CommandHandler('search', search_topics))
-    application.add_handler(CommandHandler('list_users', list_users))
     
-    application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message))
+    # Обработчик текстовых сообщений (для reply-клавиатуры)
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    # Обработчик фото (для скриншотов)
+    application.add_handler(MessageHandler(filters.PHOTO, handle_message))
+    
+    # Обработчик кнопок (для inline-клавиатуры)
     application.add_handler(CallbackQueryHandler(button_callback))
+    
     application.add_error_handler(error_handler)
 
     logger.info("✅ Запускаем polling...")
