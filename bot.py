@@ -35,23 +35,15 @@ async def main():
         .build()
     )
 
-    # Основные команды для всех пользователей
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CommandHandler('new_request', new_request_start))
     application.add_handler(CommandHandler('my_requests', my_requests))
-    
-    # Административные команды (можно использовать как альтернативу кнопкам)
     application.add_handler(CommandHandler('close_topic', close_topic))
     application.add_handler(CommandHandler('search', search_topics))
     application.add_handler(CommandHandler('list_users', list_users))
     
-    # Обработчик всех сообщений (для создания запроса)
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, handle_message))
-    
-    # Обработчик кнопок
     application.add_handler(CallbackQueryHandler(button_callback))
-    
-    # Обработчик ошибок
     application.add_error_handler(error_handler)
 
     logger.info("✅ Запускаем polling...")
