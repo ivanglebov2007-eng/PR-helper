@@ -196,7 +196,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     state = context.user_data.get('request_state')
     
-    # ===== ОБРАБОТКА СОСТОЯНИЙ (важно!) =====
+    # ===== ОБРАБОТКА СОСТОЯНИЙ =====
     add_state = context.user_data.get('add_state')
     remove_state = context.user_data.get('remove_state')
     search_state = context.user_data.get('search_state')
@@ -222,7 +222,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await close_topic_confirm(update, context)
         return
     
-    # ===== ОБРАБОТКА КНОПОК МЕНЮ (если нет активного состояния) =====
+    # ===== ОБРАБОТКА КНОПОК МЕНЮ =====
     if not state:
         if text == "📝 Создать запрос":
             await new_request_start(update, context)
@@ -278,7 +278,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         return
     
-    # ===== СОЗДАНИЕ ЗАПРОСА (остальная логика) =====
+    # ===== СОЗДАНИЕ ЗАПРОСА =====
     request_data = context.user_data.get('request_data', {})
     
     if state == 'SCREENSHOT':
@@ -835,6 +835,10 @@ async def add_user_start(update: Update, context: ContextTypes.DEFAULT_TYPE, rol
         f"➕ <b>Добавление {role_names.get(role, 'пользователя')}</b>\n\n"
         f"Отправьте username пользователя (например, @username) или его ID:\n\n"
         f"Пример: @john или 123456789\n\n"
+        f"💡 <b>Важно:</b> Чтобы добавить пользователя по username,\n"
+        f"пользователь должен:\n"
+        f"1. Иметь публичный username в Telegram\n"
+        f"2. Написать боту в ЛС (/start)\n\n"
         f"Для отмены нажмите кнопку 'Отмена'.",
         parse_mode=ParseMode.HTML,
         reply_markup=get_cancel_reply_keyboard()
@@ -855,32 +859,80 @@ async def add_user_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Пытаемся получить ID пользователя
     new_user_id = None
-    username = text.replace('@', '')
     
-    # Сначала пробуем как ID
-    try:
+    # Убираем @ если есть
+    username = text.replace('@', '').strip()
+    
+    # Сначала пробуем как ID (если введены только цифры)
+    if username.isdigit():
         new_user_id = int(username)
-    except ValueError:
-        # Если не ID, пробуем получить по username
+        logger.info(f"Пользователь введён как ID: {new_user_id}")
+    else:
+        # Ищем по username через get_chat
         try:
+            logger.info(f"Ищем пользователя по username: @{username}")
             chat = await context.bot.get_chat(f"@{username}")
             new_user_id = chat.id
+            logger.info(f"Найден пользователь: {chat.full_name} (ID: {chat.id})")
         except Exception as e:
-            logger.error(f"Ошибка получения пользователя: {e}")
-            await update.message.reply_text(
-                "❌ Не удалось найти пользователя.\n\n"
-                "Проверьте, что:\n"
-                "1. Username введён корректно (например, @john)\n"
-                "2. У пользователя есть публичный username\n"
-                "3. Пользователь существует в Telegram\n\n"
-                "Попробуйте ещё раз или нажмите 'Отмена'.",
-                reply_markup=get_cancel_reply_keyboard()
-            )
-            return
+            logger.error(f"Ошибка поиска по username: {e}")
+            
+            # Если не найден, проверяем есть ли пользователь в БД
+            # (если он уже писал боту)
+            for uid in db.pr_managers:
+                try:
+                    chat = await context.bot.get_chat(uid)
+                    if chat.username and chat.username.lower() == username.lower():
+                        new_user_id = uid
+                        logger.info(f"Найден пользователь в БД: {chat.full_name} (ID: {uid})")
+                        break
+                except:
+                    pass
+            
+            # Проверяем среди dep_chiefs
+            if not new_user_id:
+                for uid in db.dep_chiefs:
+                    try:
+                        chat = await context.bot.get_chat(uid)
+                        if chat.username and chat.username.lower() == username.lower():
+                            new_user_id = uid
+                            logger.info(f"Найден Dep.Chief в БД: {chat.full_name} (ID: {uid})")
+                            break
+                    except:
+                        pass
+            
+            # Проверяем Chief и Creator
+            if not new_user_id:
+                try:
+                    chat = await context.bot.get_chat(CHIEF_ID)
+                    if chat.username and chat.username.lower() == username.lower():
+                        new_user_id = CHIEF_ID
+                        logger.info(f"Найден Chief: {chat.full_name} (ID: {CHIEF_ID})")
+                except:
+                    pass
+            
+            if not new_user_id:
+                try:
+                    chat = await context.bot.get_chat(CREATOR_ID)
+                    if chat.username and chat.username.lower() == username.lower():
+                        new_user_id = CREATOR_ID
+                        logger.info(f"Найден Creator: {chat.full_name} (ID: {CREATOR_ID})")
+                except:
+                    pass
     
     if not new_user_id:
         await update.message.reply_text(
-            "❌ Не удалось определить ID пользователя.",
+            "❌ Не удалось найти пользователя.\n\n"
+            "Проверьте, что:\n"
+            "1. Username введён корректно (например, @john)\n"
+            "2. У пользователя есть публичный username\n"
+            "3. Пользователь существует в Telegram\n\n"
+            "💡 <b>Совет:</b>\n"
+            "1. Попросите пользователя написать боту в ЛС: /start\n"
+            "2. После этого бот сможет найти его по username\n"
+            "3. Или введите ID пользователя (цифры)\n\n"
+            "Или нажмите 'Отмена'.",
+            parse_mode=ParseMode.HTML,
             reply_markup=get_cancel_reply_keyboard()
         )
         return
