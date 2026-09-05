@@ -1,6 +1,3 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-
 import logging
 import asyncio
 import warnings
@@ -16,39 +13,28 @@ from database import Database
 from handlers import *
 from states import *
 
-# Игнорируем предупреждение PTB
-warnings.filterwarnings(
-    action="ignore",
-    message=r".*CallbackQueryHandler.*",
-    category=PTBUserWarning
-)
+warnings.filterwarnings("ignore", category=PTBUserWarning)
 
-# Настройка логирования
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# Инициализация базы данных
 db = Database()
 
 async def main():
-    """Запуск бота"""
-    logger.info("🚀 Запуск бота...")
-    
+    logger.info("🚀 Запуск...")
     db.load()
-    logger.info(f"📊 Загружено {len(db.pr_managers)} PR менеджеров")
-    
+
     application = (
         Application.builder()
         .token(BOT_TOKEN)
-        .connect_timeout(120.0)
-        .read_timeout(120.0)
-        .write_timeout(120.0)
+        .connect_timeout(120)
+        .read_timeout(120)
         .build()
     )
-    
+
     conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler('new_request', new_request_start),
@@ -87,7 +73,7 @@ async def main():
         name="new_request_conv",
         persistent=False
     )
-    
+
     application.add_handler(CommandHandler('start', start))
     application.add_handler(conv_handler)
     application.add_handler(CommandHandler('my_requests', my_requests))
@@ -99,36 +85,24 @@ async def main():
     application.add_handler(CommandHandler('list_users', list_users))
     application.add_handler(CallbackQueryHandler(button_callback))
     application.add_error_handler(error_handler)
-    
-    logger.info("✅ Бот инициализирован, запускаем polling...")
-    
+
+    logger.info("✅ Запускаем polling...")
+
     try:
         await application.initialize()
         await application.start()
-        
-        await application.updater.start_polling(
-            allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=True
-        )
-        
-        logger.info("🎯 Бот успешно запущен и слушает сообщения!")
-        
+        await application.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+        logger.info("🎯 Бот работает!")
         while True:
             await asyncio.sleep(1)
-            
     except Exception as e:
         logger.error(f"❌ Ошибка: {e}")
-        raise
-    
     finally:
         await application.stop()
         await application.shutdown()
-        logger.info("🛑 Бот остановлен")
 
 if __name__ == '__main__':
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("🛑 Бот остановлен пользователем")
-    except Exception as e:
-        logger.error(f"❌ Непредвиденная ошибка: {e}")
+        logger.info("🛑 Остановлен")
