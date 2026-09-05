@@ -111,7 +111,6 @@ async def new_request_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Нет прав.")
         return
 
-    # Проверяем GROUP_ID
     if GROUP_ID == 0:
         await update.message.reply_text(
             "❌ GROUP_ID не настроен! Обратитесь к администратору."
@@ -327,7 +326,8 @@ async def finish_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
         error_msg = "❌ Не удалось создать запрос. Проверьте:\n" \
                     "1. Что бот является администратором группы\n" \
                     "2. Что в группе включён режим форума\n" \
-                    "3. Что у бота есть право 'Управление темами'"
+                    "3. Что у бота есть право 'Управление темами'\n" \
+                    "4. Что GROUP_ID правильный (должен быть отрицательным!)"
         if update.effective_chat:
             await update.message.reply_text(error_msg)
         else:
@@ -346,27 +346,35 @@ async def create_request_topic(update: Update, context: ContextTypes.DEFAULT_TYP
             logger.error("GROUP_ID не настроен!")
             return None
 
-        # Проверяем, что бот может создавать темы
+        # Проверяем доступ к группе
         try:
-            # Сначала проверяем доступ к группе
             chat = await context.bot.get_chat(GROUP_ID)
-            logger.info(f"Группа: {chat.title} (ID: {chat.id})")
-            
-            # Проверяем, что это форум
-            if not hasattr(chat, 'is_forum') or not chat.is_forum:
-                logger.error("Группа не является форумом! Включите режим форума.")
-                return None
-                
+            logger.info(f"✅ Группа найдена: {chat.title} (ID: {chat.id})")
+            logger.info(f"Тип чата: {chat.type}")
+            if hasattr(chat, 'is_forum'):
+                logger.info(f"Режим форума: {chat.is_forum}")
         except Exception as e:
-            logger.error(f"Ошибка доступа к группе: {e}")
+            logger.error(f"❌ Не могу получить чат: {e}")
+            return None
+
+        # Проверяем права бота
+        try:
+            bot_member = await context.bot.get_chat_member(GROUP_ID, context.bot.id)
+            logger.info(f"Статус бота: {bot_member.status}")
+            if hasattr(bot_member, 'can_create_topics'):
+                logger.info(f"Может создавать темы: {bot_member.can_create_topics}")
+        except Exception as e:
+            logger.error(f"❌ Не могу проверить права бота: {e}")
             return None
 
         # Создаем тему
+        logger.info(f"📝 Создаю тему: {topic_title[:255]}")
         topic = await context.bot.create_forum_topic(
             chat_id=GROUP_ID,
             name=topic_title[:255]
         )
         topic_id = topic.message_thread_id
+        logger.info(f"✅ Тема создана! ID: {topic_id}")
 
         # Формируем сообщение
         text = (
@@ -404,11 +412,11 @@ async def create_request_topic(update: Update, context: ContextTypes.DEFAULT_TYP
             parse_mode=ParseMode.HTML
         )
 
-        logger.info(f"✅ Тема {topic_id} создана успешно")
+        logger.info(f"✅ Тема {topic_id} создана успешно!")
         return topic_id
 
     except Exception as e:
-        logger.error(f"Ошибка создания темы: {e}")
+        logger.error(f"❌ Ошибка создания темы: {e}")
         logger.error(f"GROUP_ID: {GROUP_ID}")
         return None
 
@@ -634,7 +642,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 return
             await query.edit_message_text(
                 "🔍 <b>Поиск тем</b>\n\n"
-                "Используйте команду:\n/search <ключевое слово>\n\n"
+                "Используйте команду:\n/search <ключевое_слово>\n\n"
                 "Пример: /search канал",
                 parse_mode=ParseMode.HTML
             )
