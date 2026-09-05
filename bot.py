@@ -8,7 +8,7 @@ from telegram.ext import (
 )
 from telegram.warnings import PTBUserWarning
 
-from config import BOT_TOKEN
+from config import BOT_TOKEN, DATABASE_URL
 from database import Database
 from handlers import *
 from states import *
@@ -21,11 +21,11 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-db = Database()
+# Инициализация БД
+db = Database(DATABASE_URL)
 
 async def main():
     logger.info("🚀 Запуск...")
-    db.load()
 
     application = (
         Application.builder()
@@ -58,6 +58,7 @@ async def main():
     finally:
         await application.stop()
         await application.shutdown()
+        db.close()
 
 if __name__ == '__main__':
     try:
