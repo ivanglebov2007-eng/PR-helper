@@ -4,7 +4,7 @@ import warnings
 from telegram import Update
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
-    MessageHandler, filters, ConversationHandler
+    MessageHandler, filters
 )
 from telegram.warnings import PTBUserWarning
 
@@ -35,15 +35,14 @@ async def main():
         .build()
     )
 
-    # Регистрируем обработчики
+    # Основные команды для всех пользователей
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CommandHandler('new_request', new_request_start))
     application.add_handler(CommandHandler('my_requests', my_requests))
+    
+    # Административные команды (можно использовать как альтернативу кнопкам)
     application.add_handler(CommandHandler('close_topic', close_topic))
     application.add_handler(CommandHandler('search', search_topics))
-    application.add_handler(CommandHandler('add_pr_by_id', add_pr_by_id))
-    application.add_handler(CommandHandler('add_dep', add_dep))
-    application.add_handler(CommandHandler('remove_user', remove_user))
     application.add_handler(CommandHandler('list_users', list_users))
     
     # Обработчик всех сообщений (для создания запроса)
