@@ -111,8 +111,11 @@ async def new_request_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     db.set_pending_request(user_id, {})
+    context.user_data['state'] = SCREENSHOT
+
     await update.message.reply_text(
-        "📝 <b>Шаг 1/6: отправьте СКРИНШОТ переписки</b>",
+        "📝 <b>Шаг 1/6: отправьте СКРИНШОТ переписки</b>\n\n"
+        "Отправьте фото:",
         parse_mode=ParseMode.HTML,
         reply_markup=get_cancel_keyboard()
     )
@@ -124,7 +127,7 @@ async def handle_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not photo:
         await update.message.reply_text(
-            "❌ Отправьте фото.",
+            "❌ Отправьте изображение (фото).",
             reply_markup=get_cancel_keyboard()
         )
         return SCREENSHOT
@@ -137,9 +140,12 @@ async def handle_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pending['screenshot'] = file_url
         db.set_pending_request(user_id, pending)
 
+        context.user_data['state'] = MEDIA_LINK
+
         await update.message.reply_text(
             "✅ Скриншот получен!\n\n"
-            "📎 <b>Шаг 2/6: ссылка на канал</b> (YouTube, Twitch, TikTok)",
+            "📎 <b>Шаг 2/6: отправьте ссылку на канал</b>\n"
+            "Поддерживаются: YouTube, Twitch, TikTok",
             parse_mode=ParseMode.HTML,
             reply_markup=get_cancel_keyboard()
         )
@@ -147,7 +153,7 @@ async def handle_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logger.error(f"Ошибка скриншота: {e}")
-        await update.message.reply_text("❌ Ошибка, попробуйте ещё раз.")
+        await update.message.reply_text("❌ Ошибка. Попробуйте ещё раз.", reply_markup=get_cancel_keyboard())
         return SCREENSHOT
 
 async def handle_media_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -165,9 +171,10 @@ async def handle_media_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pending['media_link'] = text
     db.set_pending_request(user_id, pending)
 
+    context.user_data['state'] = CHANNEL_NAME
+
     await update.message.reply_text(
-        "✅ Ссылка принята.\n\n"
-        "📌 <b>Шаг 3/6: название канала</b>",
+        "✅ Ссылка принята.\n\n📌 <b>Шаг 3/6: название канала</b>",
         parse_mode=ParseMode.HTML,
         reply_markup=get_cancel_keyboard()
     )
@@ -185,9 +192,10 @@ async def handle_channel_name(update: Update, context: ContextTypes.DEFAULT_TYPE
     pending['channel_name'] = sanitize_text(text)
     db.set_pending_request(user_id, pending)
 
+    context.user_data['state'] = SUBSCRIBERS
+
     await update.message.reply_text(
-        "✅ Название сохранено.\n\n"
-        "👥 <b>Шаг 4/6: количество подписчиков</b> (только цифры)",
+        "✅ Название сохранено.\n\n👥 <b>Шаг 4/6: количество подписчиков</b> (только цифры)",
         parse_mode=ParseMode.HTML,
         reply_markup=get_cancel_keyboard()
     )
@@ -201,19 +209,17 @@ async def handle_subscribers(update: Update, context: ContextTypes.DEFAULT_TYPE)
         subs = int(text.replace(' ', '').replace(',', ''))
         formatted = f"{subs:,}".replace(',', ' ')
     except ValueError:
-        await update.message.reply_text(
-            "❌ Введите число.",
-            reply_markup=get_cancel_keyboard()
-        )
+        await update.message.reply_text("❌ Введите число.", reply_markup=get_cancel_keyboard())
         return SUBSCRIBERS
 
     pending = db.get_pending_request(user_id) or {}
     pending['subscribers'] = formatted
     db.set_pending_request(user_id, pending)
 
+    context.user_data['state'] = CONTACT_LINK
+
     await update.message.reply_text(
-        f"✅ Подписчиков: {formatted}\n\n"
-        "📞 <b>Шаг 5/6: ссылка для связи</b>",
+        f"✅ Подписчиков: {formatted}\n\n📞 <b>Шаг 5/6: ссылка для связи</b>",
         parse_mode=ParseMode.HTML,
         reply_markup=get_cancel_keyboard()
     )
@@ -234,9 +240,10 @@ async def handle_contact_link(update: Update, context: ContextTypes.DEFAULT_TYPE
     pending['contact_link'] = text
     db.set_pending_request(user_id, pending)
 
+    context.user_data['state'] = CONDITIONS
+
     await update.message.reply_text(
-        "✅ Ссылка сохранена.\n\n"
-        "📝 <b>Шаг 6/6: условия</b> (или /skip)",
+        "✅ Ссылка сохранена.\n\n📝 <b>Шаг 6/6: условия</b> (или /skip)",
         parse_mode=ParseMode.HTML,
         reply_markup=get_skip_keyboard()
     )
@@ -297,6 +304,7 @@ async def finish_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Не удалось создать запрос.")
 
     db.clear_pending_request(user_id)
+    context.user_data.pop('state', None)
     return ConversationHandler.END
 
 async def create_request_topic(update: Update, context: ContextTypes.DEFAULT_TYPE, request_data: dict) -> Optional[int]:
@@ -480,8 +488,6 @@ async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("❌ ID должен быть числом.")
 
-# ============ СПИСОК ПОЛЬЗОВАТЕЛЕЙ С ССЫЛКАМИ ============
-
 async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if not is_admin(user_id) and not is_creator(user_id):
@@ -522,12 +528,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.edit_message_text("❌ Нет прав.")
                 return
             db.set_pending_request(user_id, {})
+            context.user_data['state'] = SCREENSHOT
             await query.edit_message_text(
                 "📝 <b>Шаг 1/6: отправьте СКРИНШОТ</b>",
                 parse_mode=ParseMode.HTML,
                 reply_markup=get_cancel_keyboard()
             )
-            context.user_data['state'] = SCREENSHOT
+            return
 
         elif data == "my_requests":
             topics = db.get_user_topics(user_id)
@@ -607,11 +614,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not is_creator(user_id):
                 await query.edit_message_text("❌ Нет прав.")
                 return
+            active_topics = len([t for t in db.topics.values() if t.is_active])
             await query.edit_message_text(
                 f"⚙️ <b>Настройки</b>\n\n"
                 f"PR: {len(db.pr_managers)}\n"
                 f"Dep.Chief: {len(db.dep_chiefs)}\n"
-                f"Тем: {len(db.topics)}",
+                f"Тем: {len(db.topics)}\n"
+                f"Активных: {active_topics}",
                 parse_mode=ParseMode.HTML
             )
 
@@ -665,5 +674,6 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     db.clear_pending_request(user_id)
+    context.user_data.pop('state', None)
     await update.message.reply_text("❌ Отменено.")
     return ConversationHandler.END
