@@ -17,21 +17,40 @@ from utils import (
 )
 
 logger = logging.getLogger(__name__)
-db = Database()
+
+# Инициализация БД будет в bot.py, здесь используем глобальную переменную
+db = None
+
+def set_db(database_instance):
+    """Установка экземпляра базы данных"""
+    global db
+    db = database_instance
 
 # ============ ПРОВЕРКА ПРАВ ============
 
 def is_chief(user_id: int) -> bool:
-    return user_id == CHIEF_ID
+    if user_id == CHIEF_ID:
+        return True
+    if db:
+        return db.is_chief(user_id)
+    return False
 
 def is_dep_chief(user_id: int) -> bool:
-    return user_id in db.dep_chiefs
+    if user_id == CHIEF_ID:
+        return True
+    if db:
+        return db.is_dep_chief(user_id)
+    return False
 
 def is_admin(user_id: int) -> bool:
-    return is_chief(user_id) or is_dep_chief(user_id)
+    return is_chief(user_id) or is_dep_chief(user_id) or user_id == CREATOR_ID
 
 def is_pr_manager(user_id: int) -> bool:
-    return user_id in db.pr_managers or is_admin(user_id) or is_creator(user_id)
+    if user_id == CREATOR_ID or user_id == CHIEF_ID:
+        return True
+    if db:
+        return db.is_pr_manager(user_id)
+    return False
 
 def is_creator(user_id: int) -> bool:
     return user_id == CREATOR_ID
@@ -58,10 +77,11 @@ async def close_topic_with_delete(update: Update, context: ContextTypes.DEFAULT_
     if not is_admin(user_id) and not is_creator(user_id):
         return False
     
-    if topic_id not in db.topics:
+    if not db.get_topic(topic_id):
         return False
     
-    if not db.topics[topic_id].is_active:
+    topic_data = db.get_topic(topic_id)
+    if not topic_data or not topic_data.is_active:
         return False
     
     # Закрываем тему в БД (архивируем)
@@ -78,16 +98,7 @@ async def close_topic_with_delete(update: Update, context: ContextTypes.DEFAULT_
         
     except Exception as e:
         logger.error(f"❌ Ошибка удаления темы {topic_id}: {e}")
-        # Если не удалось удалить, хотя бы закрываем права
-        try:
-            await context.bot.send_message(
-                chat_id=GROUP_ID,
-                message_thread_id=topic_id,
-                text="🔒 Тема закрыта и заархивирована."
-            )
-        except:
-            pass
-        return True
+        return True  # Всё равно считаем закрытой
 
 # ============ REPLY КЛАВИАТУРЫ ============
 
@@ -197,10 +208,10 @@ def get_archive_inline_keyboard(closed_topics: list) -> InlineKeyboardMarkup:
     if not closed_topics:
         keyboard.append([InlineKeyboardButton("📭 Архив пуст", callback_data="no_topics")])
     else:
-        for topic_id, data in closed_topics[:20]:  # Показываем последние 20
+        for topic_id, data in closed_topics[:20]:
             keyboard.append([
                 InlineKeyboardButton(
-                    f"📁 {data.channel_name} (закрыта {format_date(data.closed_at) if data.closed_at else '?'})",
+                    f"📁 {data.channel_name}",
                     callback_data=f"archive_topic_{topic_id}"
                 )
             ])
@@ -631,7 +642,8 @@ async def create_request_topic(update: Update, context: ContextTypes.DEFAULT_TYP
             logger.error(f"❌ Ошибка тегирования Chief: {e}")
 
         # Тегируем Dep.Chief
-        for dep_id in db.dep_chiefs:
+        dep_chiefs = db.get_dep_chiefs()
+        for dep_id in dep_chiefs:
             dep_name = await get_user_name(context, dep_id)
             try:
                 await context.bot.send_message(
@@ -713,7 +725,7 @@ async def my_requests(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     topics_list = []
     for tid in topics:
-        data = db.topics.get(tid)
+        data = db.get_topic(tid)
         if data:
             topics_list.append((tid, data))
     
@@ -740,7 +752,7 @@ async def open_topic(update: Update, context: ContextTypes.DEFAULT_TYPE, topic_i
     query = update.callback_query
     user_id = query.from_user.id
     
-    topic_data = db.topics.get(topic_id)
+    topic_data = db.get_topic(topic_id)
     if not topic_data:
         await query.edit_message_text("❌ Тема не найдена.")
         return
@@ -751,7 +763,6 @@ async def open_topic(update: Update, context: ContextTypes.DEFAULT_TYPE, topic_i
     
     topic_link = f"https://t.me/c/{str(GROUP_ID)[4:]}/{topic_id}"
     
-    # Просто перекидываем на тему
     await query.edit_message_text(
         f"🔗 <b>Переход к теме #{topic_id}</b>\n\n"
         f"<a href='{topic_link}'>Открыть тему</a>\n\n"
@@ -806,10 +817,7 @@ async def show_close_topics(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Нет прав.")
         return
     
-    active_topics = []
-    for topic_id, data in db.topics.items():
-        if data.is_active:
-            active_topics.append((topic_id, data))
+    active_topics = db.get_active_topics()
     
     if not active_topics:
         keyboard = [
@@ -840,11 +848,12 @@ async def close_topic_select(update: Update, context: ContextTypes.DEFAULT_TYPE,
         await query.edit_message_text("❌ Нет прав.")
         return
     
-    if topic_id not in db.topics:
+    if not db.get_topic(topic_id):
         await query.edit_message_text("❌ Тема не найдена.")
         return
     
-    if not db.topics[topic_id].is_active:
+    topic_data = db.get_topic(topic_id)
+    if not topic_data or not topic_data.is_active:
         await query.edit_message_text("❌ Тема уже закрыта.")
         return
     
@@ -863,10 +872,7 @@ async def close_all_topics(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("❌ Нет прав.")
         return
     
-    active_topics = []
-    for topic_id, data in db.topics.items():
-        if data.is_active:
-            active_topics.append(topic_id)
+    active_topics = db.get_active_topics()
     
     if not active_topics:
         await query.edit_message_text("📭 Нет активных тем для закрытия.")
@@ -875,7 +881,7 @@ async def close_all_topics(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(f"⏳ Закрываю {len(active_topics)} тем...")
     
     success_count = 0
-    for topic_id in active_topics:
+    for topic_id, _ in active_topics:
         success = await close_topic_with_delete(update, context, topic_id)
         if success:
             success_count += 1
@@ -894,10 +900,7 @@ async def show_archive(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Нет прав.")
         return
     
-    closed_topics = []
-    for topic_id, data in db.topics.items():
-        if not data.is_active:
-            closed_topics.append((topic_id, data))
+    closed_topics = db.get_closed_topics()
     
     if not closed_topics:
         keyboard = [
@@ -909,9 +912,6 @@ async def show_archive(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return
-    
-    # Сортируем по дате закрытия (сначала новые)
-    closed_topics.sort(key=lambda x: x[1].closed_at or x[1].created_at, reverse=True)
     
     text = "📂 <b>Архив закрытых тем</b>\n\n"
     for topic_id, data in closed_topics[:10]:
@@ -933,7 +933,7 @@ async def archive_topic_view(update: Update, context: ContextTypes.DEFAULT_TYPE,
         await query.edit_message_text("❌ Нет прав.")
         return
     
-    topic_data = db.topics.get(topic_id)
+    topic_data = db.get_topic(topic_id)
     if not topic_data:
         await query.edit_message_text("❌ Тема не найдена.")
         return
@@ -970,22 +970,22 @@ async def statistics(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Нет прав.")
         return
     
-    active_topics = len([t for t in db.topics.values() if t.is_active])
-    closed_topics = len([t for t in db.topics.values() if not t.is_active])
+    stats = db.get_statistics()
     
     text = (
         "📊 <b>Статистика бота</b>\n\n"
         f"👤 <b>Пользователи:</b>\n"
         f"  • Создатель: 1\n"
         f"  • Chief: 1\n"
-        f"  • Dep.Chief: {len(db.dep_chiefs)}\n"
-        f"  • PR Managers: {len(db.pr_managers)}\n\n"
+        f"  • Dep.Chief: {stats['dep_chief_count']}\n"
+        f"  • PR Managers: {stats['pr_count']}\n"
+        f"  • Всего: {stats['total_users']}\n\n"
         f"📋 <b>Темы:</b>\n"
-        f"  • Всего: {len(db.topics)}\n"
-        f"  • Активных: {active_topics}\n"
-        f"  • Закрытых (в архиве): {closed_topics}\n\n"
+        f"  • Всего: {stats['total_topics']}\n"
+        f"  • Активных: {stats['active_topics']}\n"
+        f"  • Закрытых (в архиве): {stats['closed_topics']}\n\n"
         f"💾 <b>База данных:</b>\n"
-        f"  • Файл: {db.file_path}"
+        f"  • Тип: PostgreSQL"
     )
     
     keyboard = get_admin_reply_keyboard()
@@ -1010,7 +1010,7 @@ async def manage_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Выберите действие:\n"
         f"👤 Ваша роль: "
         f"{'Создатель' if is_creator(user_id) else 'Chief' if is_chief(user_id) else 'Dep.Chief'}\n\n"
-        f"📋 Всего пользователей: {len(db.pr_managers) + len(db.dep_chiefs) + 2}"
+        f"📋 Всего пользователей: {len(db.get_all_users())}"
     )
     
     keyboard = get_manage_users_reply_keyboard(
@@ -1074,61 +1074,16 @@ async def add_user_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     new_user_id = None
-    found_user_info = None
-    
     username = text.replace('@', '').strip()
     
     if username.isdigit():
         new_user_id = int(username)
-        try:
-            chat = await context.bot.get_chat(new_user_id)
-            found_user_info = chat
-        except:
-            pass
     else:
         try:
             chat = await context.bot.get_chat(f"@{username}")
             new_user_id = chat.id
-            found_user_info = chat
         except:
-            for uid in db.pr_managers:
-                try:
-                    chat = await context.bot.get_chat(uid)
-                    if chat.username and chat.username.lower() == username:
-                        new_user_id = uid
-                        found_user_info = chat
-                        break
-                except:
-                    pass
-        
-        if not new_user_id:
-            for uid in db.dep_chiefs:
-                try:
-                    chat = await context.bot.get_chat(uid)
-                    if chat.username and chat.username.lower() == username:
-                        new_user_id = uid
-                        found_user_info = chat
-                        break
-                except:
-                    pass
-        
-        if not new_user_id:
-            try:
-                chat = await context.bot.get_chat(CHIEF_ID)
-                if chat.username and chat.username.lower() == username:
-                    new_user_id = CHIEF_ID
-                    found_user_info = chat
-            except:
-                pass
-        
-        if not new_user_id:
-            try:
-                chat = await context.bot.get_chat(CREATOR_ID)
-                if chat.username and chat.username.lower() == username:
-                    new_user_id = CREATOR_ID
-                    found_user_info = chat
-            except:
-                pass
+            return
     
     if not new_user_id:
         await update.message.reply_text(
@@ -1153,17 +1108,16 @@ async def add_user_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if role == "creator":
         if is_creator(user_id):
-            success = db.add_pr_manager(new_user_id)
+            success = db.add_user(new_user_id, role='pr')
             await update.message.reply_text(
-                f"✅ Пользователь {new_user_id} добавлен как PR Manager.\n"
-                f"⚠️ Создатель может быть только один (ID: {CREATOR_ID})."
+                f"✅ Пользователь {new_user_id} добавлен как PR Manager."
             )
         else:
             await update.message.reply_text("❌ Нет прав для добавления Создателя.")
             return
     elif role == "chief":
         if is_creator(user_id) or is_chief(user_id):
-            success = db.add_pr_manager(new_user_id)
+            success = db.add_user(new_user_id, role='pr')
             await update.message.reply_text(
                 f"✅ Пользователь {new_user_id} добавлен как PR Manager."
             )
@@ -1172,20 +1126,20 @@ async def add_user_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
     elif role == "dep":
         if is_creator(user_id) or is_chief(user_id):
-            success = db.add_dep_chief(new_user_id)
+            success = db.add_user(new_user_id, role='dep_chief')
             if success:
                 await update.message.reply_text(f"✅ Пользователь {new_user_id} добавлен как Dep.Chief.")
             else:
-                await update.message.reply_text("❌ Пользователь уже является Dep.Chief.")
+                await update.message.reply_text("❌ Ошибка добавления.")
         else:
             await update.message.reply_text("❌ Нет прав для добавления Dep.Chief.")
             return
     elif role == "pr":
-        success = db.add_pr_manager(new_user_id)
+        success = db.add_user(new_user_id, role='pr')
         if success:
             await update.message.reply_text(f"✅ Пользователь {new_user_id} добавлен как PR Manager.")
         else:
-            await update.message.reply_text("❌ Пользователь уже является PR Manager.")
+            await update.message.reply_text("❌ Ошибка добавления.")
     
     if success:
         try:
@@ -1250,8 +1204,8 @@ async def remove_user_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("❌ Нельзя удалить Создателя.")
         return
     
-    removed = db.remove_pr_manager(remove_id) or db.remove_dep_chief(remove_id)
-    if removed:
+    success = db.remove_user(remove_id)
+    if success:
         await update.message.reply_text(f"✅ Пользователь {remove_id} удалён.")
     else:
         await update.message.reply_text("❌ Пользователь не найден.")
@@ -1274,19 +1228,31 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     text = "👥 <b>Список пользователей:</b>\n\n"
+    
+    all_users = db.get_all_users()
+    pr_users = [u for u in all_users if u['role'] == 'pr']
+    dep_users = [u for u in all_users if u['role'] == 'dep_chief']
+    chief_users = [u for u in all_users if u['role'] == 'chief']
 
-    if db.pr_managers:
+    if pr_users:
         text += "👤 <b>PR Managers:</b>\n"
-        for uid in db.pr_managers:
-            name = await get_user_name(context, uid)
-            text += f"• <a href='tg://user?id={uid}'>{name}</a>\n"
+        for u in pr_users:
+            name = await get_user_name(context, u['user_id'])
+            text += f"• <a href='tg://user?id={u['user_id']}'>{name}</a>\n"
         text += "\n"
 
-    if db.dep_chiefs:
+    if dep_users:
         text += "👤 <b>Dep.Chief:</b>\n"
-        for uid in db.dep_chiefs:
-            name = await get_user_name(context, uid)
-            text += f"• <a href='tg://user?id={uid}'>{name}</a>\n"
+        for u in dep_users:
+            name = await get_user_name(context, u['user_id'])
+            text += f"• <a href='tg://user?id={u['user_id']}'>{name}</a>\n"
+        text += "\n"
+
+    if chief_users:
+        text += "👤 <b>Chief:</b>\n"
+        for u in chief_users:
+            name = await get_user_name(context, u['user_id'])
+            text += f"• <a href='tg://user?id={u['user_id']}'>{name}</a>\n"
         text += "\n"
 
     chief_name = await get_user_name(context, CHIEF_ID)
@@ -1472,7 +1438,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             topics_list = []
             for tid in topics:
-                data_topic = db.topics.get(tid)
+                data_topic = db.get_topic(tid)
                 if data_topic:
                     topics_list.append((tid, data_topic))
             
