@@ -84,11 +84,9 @@ async def close_topic_with_delete(update: Update, context: ContextTypes.DEFAULT_
     if not topic_data or not topic_data.is_active:
         return False
     
-    # Закрываем тему в БД (архивируем)
     db.close_topic(topic_id, user_id)
     
     try:
-        # Удаляем тему из группы
         await context.bot.delete_forum_topic(
             chat_id=GROUP_ID,
             message_thread_id=topic_id
@@ -98,7 +96,7 @@ async def close_topic_with_delete(update: Update, context: ContextTypes.DEFAULT_
         
     except Exception as e:
         logger.error(f"❌ Ошибка удаления темы {topic_id}: {e}")
-        return True  # Всё равно считаем закрытой
+        return True
 
 # ============ REPLY КЛАВИАТУРЫ ============
 
@@ -260,6 +258,7 @@ async def new_request_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # Инициализируем данные запроса
     context.user_data['request_state'] = 'SCREENSHOT'
     context.user_data['request_data'] = {}
 
@@ -279,7 +278,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     add_state = context.user_data.get('add_state')
     remove_state = context.user_data.get('remove_state')
     search_state = context.user_data.get('search_state')
-    close_state = context.user_data.get('close_state')
     
     if add_state == 'WAITING_USERNAME':
         await add_user_confirm(update, context)
@@ -293,10 +291,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await search_topics_confirm(update, context)
         return
     
-    if close_state == 'WAITING_TOPIC_ID':
-        await close_topic_confirm(update, context)
-        return
-    
+    # ===== ОБРАБОТКА КНОПОК МЕНЮ =====
     if not state:
         if text == "📝 Создать запрос":
             await new_request_start(update, context)
@@ -355,6 +350,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         return
     
+    # ===== СОЗДАНИЕ ЗАПРОСА =====
     request_data = context.user_data.get('request_data', {})
     
     if state == 'SCREENSHOT':
@@ -496,8 +492,10 @@ async def finish_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     request_data = context.user_data.get('request_data', {})
     
-    missing = [f for f in REQUIRED_FIELDS if f not in request_data]
+    # Проверяем наличие всех полей
+    missing = [f for f in REQUIRED_FIELDS if f not in request_data or not request_data[f]]
     if missing:
+        # Показываем, какие поля не заполнены
         await update.message.reply_text(
             f"❌ Не хватает полей: {', '.join(missing)}\n"
             "Начните заново с /new_request",
@@ -510,10 +508,10 @@ async def finish_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop('request_data', None)
         return
 
+    # Отправляем фото в группу
     screenshot_url = request_data.get('screenshot')
     photo_sent = False
     
-    # Отправляем фото в группу
     if screenshot_url:
         try:
             await context.bot.send_photo(
@@ -546,7 +544,7 @@ async def finish_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
             channel_name=request_data['channel_name'],
             subscribers=request_data['subscribers'],
             contact_link=request_data['contact_link'],
-            conditions=request_data['conditions'],
+            conditions=request_data.get('conditions', "Не указаны"),
             user_id=user_id,
             created_at=datetime.now().isoformat()
         )
@@ -615,7 +613,7 @@ async def create_request_topic(update: Update, context: ContextTypes.DEFAULT_TYP
             f"👥 <b>Подписчиков:</b> {request_data['subscribers']}\n"
             f"🔗 <b>Ссылка:</b> <a href='{request_data['media_link']}'>Открыть</a>\n"
             f"📞 <b>Связь:</b> <a href='{request_data['contact_link']}'>Написать</a>\n"
-            f"📝 <b>Условия:</b>\n{sanitize_text(request_data['conditions'])}\n\n"
+            f"📝 <b>Условия:</b>\n{sanitize_text(request_data.get('conditions', 'Не указаны'))}\n\n"
             f"{photo_text}\n\n"
             f"⏳ <b>Ожидайте ответа от руководства!</b>"
         )
@@ -1083,7 +1081,7 @@ async def add_user_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
             chat = await context.bot.get_chat(f"@{username}")
             new_user_id = chat.id
         except:
-            return
+            pass
     
     if not new_user_id:
         await update.message.reply_text(
