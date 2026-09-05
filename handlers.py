@@ -101,230 +101,220 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     )
 
-# ============ СОЗДАНИЕ ЗАПРОСА ============
+# ============ СОЗДАНИЕ ЗАПРОСА (новая логика) ============
 
 async def new_request_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Начало создания запроса - Шаг 1"""
+    """Начало создания запроса"""
     user_id = update.effective_user.id
 
     if not is_pr_manager(user_id) and not is_creator(user_id):
         await update.message.reply_text("❌ Нет прав.")
-        return ConversationHandler.END
+        return
 
-    # Очищаем старые данные
+    # Очищаем старые данные и устанавливаем состояние
     db.set_pending_request(user_id, {})
-    
+    context.user_data['request_state'] = 'SCREENSHOT'
+    context.user_data['request_data'] = {}
+
     await update.message.reply_text(
         "📝 <b>Шаг 1/6: отправьте СКРИНШОТ переписки</b>\n\n"
         "Отправьте фото (скриншот диалога с медиа):",
         parse_mode=ParseMode.HTML,
         reply_markup=get_cancel_keyboard()
     )
-    return SCREENSHOT
 
-async def handle_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка скриншота - Шаг 2"""
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка всех сообщений при создании запроса"""
     user_id = update.effective_user.id
-    photo = update.message.photo
-
-    if not photo:
+    state = context.user_data.get('request_state')
+    
+    # Если нет активного запроса - игнорируем
+    if not state:
+        return
+    
+    # Получаем данные запроса
+    request_data = context.user_data.get('request_data', {})
+    
+    # === Шаг 1: Скриншот ===
+    if state == 'SCREENSHOT':
+        photo = update.message.photo
+        if not photo:
+            await update.message.reply_text(
+                "❌ Отправьте изображение (фото).\nПопробуйте ещё раз:",
+                reply_markup=get_cancel_keyboard()
+            )
+            return
+        
+        try:
+            file = await photo[-1].get_file()
+            file_url = file.file_path
+            request_data['screenshot'] = file_url
+            context.user_data['request_data'] = request_data
+            context.user_data['request_state'] = 'MEDIA_LINK'
+            
+            await update.message.reply_text(
+                "✅ Скриншот получен!\n\n"
+                "📎 <b>Шаг 2/6: отправьте ссылку на канал</b>\n"
+                "Поддерживаются: YouTube, Twitch, TikTok\n\n"
+                "Пример: https://www.youtube.com/@channel",
+                parse_mode=ParseMode.HTML,
+                reply_markup=get_cancel_keyboard()
+            )
+        except Exception as e:
+            logger.error(f"Ошибка скриншота: {e}")
+            await update.message.reply_text(
+                "❌ Ошибка при загрузке фото. Попробуйте ещё раз.",
+                reply_markup=get_cancel_keyboard()
+            )
+        return
+    
+    # === Шаг 2: Ссылка на медиа ===
+    if state == 'MEDIA_LINK':
+        text = update.message.text.strip()
+        if not validate_media_link(text):
+            await update.message.reply_text(
+                "❌ Некорректная ссылка.\n"
+                "Ссылка должна начинаться с http:// или https://\n"
+                "И содержать: youtube, twitch или tiktok\n\n"
+                "Попробуйте ещё раз:",
+                reply_markup=get_cancel_keyboard()
+            )
+            return
+        
+        request_data['media_link'] = text
+        context.user_data['request_data'] = request_data
+        context.user_data['request_state'] = 'CHANNEL_NAME'
+        
         await update.message.reply_text(
-            "❌ Отправьте изображение (фото).\n"
-            "Попробуйте ещё раз:",
-            reply_markup=get_cancel_keyboard()
-        )
-        return SCREENSHOT
-
-    try:
-        file = await photo[-1].get_file()
-        file_url = file.file_path
-
-        pending = db.get_pending_request(user_id) or {}
-        pending['screenshot'] = file_url
-        db.set_pending_request(user_id, pending)
-
-        await update.message.reply_text(
-            "✅ Скриншот получен!\n\n"
-            "📎 <b>Шаг 2/6: отправьте ссылку на канал</b>\n"
-            "Поддерживаются: YouTube, Twitch, TikTok\n\n"
-            "Пример: https://www.youtube.com/@channel",
+            "✅ Ссылка принята.\n\n"
+            "📌 <b>Шаг 3/6: введите название канала</b>",
             parse_mode=ParseMode.HTML,
             reply_markup=get_cancel_keyboard()
         )
-        return MEDIA_LINK
-
-    except Exception as e:
-        logger.error(f"Ошибка скриншота: {e}")
+        return
+    
+    # === Шаг 3: Название канала ===
+    if state == 'CHANNEL_NAME':
+        text = update.message.text.strip()
+        if not text:
+            await update.message.reply_text(
+                "❌ Название не может быть пустым.",
+                reply_markup=get_cancel_keyboard()
+            )
+            return
+        
+        request_data['channel_name'] = sanitize_text(text)
+        context.user_data['request_data'] = request_data
+        context.user_data['request_state'] = 'SUBSCRIBERS'
+        
         await update.message.reply_text(
-            "❌ Ошибка при загрузке фото. Попробуйте ещё раз.",
+            "✅ Название сохранено.\n\n"
+            "👥 <b>Шаг 4/6: количество подписчиков</b>\n"
+            "Введите только цифры (пример: 10000 или 10,000):",
+            parse_mode=ParseMode.HTML,
             reply_markup=get_cancel_keyboard()
         )
-        return SCREENSHOT
-
-async def handle_media_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка ссылки на медиа - Шаг 3"""
-    user_id = update.effective_user.id
-    text = update.message.text.strip()
-
-    if not validate_media_link(text):
+        return
+    
+    # === Шаг 4: Подписчики ===
+    if state == 'SUBSCRIBERS':
+        text = update.message.text.strip()
+        try:
+            subs = int(text.replace(' ', '').replace(',', '').replace('.', ''))
+            if subs < 0:
+                raise ValueError
+            formatted = f"{subs:,}".replace(',', ' ')
+        except ValueError:
+            await update.message.reply_text(
+                "❌ Введите корректное число (только цифры).\n"
+                "Пример: 10000",
+                reply_markup=get_cancel_keyboard()
+            )
+            return
+        
+        request_data['subscribers'] = formatted
+        context.user_data['request_data'] = request_data
+        context.user_data['request_state'] = 'CONTACT_LINK'
+        
         await update.message.reply_text(
-            "❌ Некорректная ссылка.\n"
-            "Ссылка должна начинаться с http:// или https://\n"
-            "И содержать: youtube, twitch или tiktok\n\n"
-            "Попробуйте ещё раз:",
+            f"✅ Подписчиков: {formatted}\n\n"
+            "📞 <b>Шаг 5/6: отправьте ссылку для связи</b>\n"
+            "Telegram, email, сайт и т.д.:",
+            parse_mode=ParseMode.HTML,
             reply_markup=get_cancel_keyboard()
         )
-        return MEDIA_LINK
-
-    pending = db.get_pending_request(user_id) or {}
-    pending['media_link'] = text
-    db.set_pending_request(user_id, pending)
-
-    await update.message.reply_text(
-        "✅ Ссылка принята.\n\n"
-        "📌 <b>Шаг 3/6: введите название канала</b>",
-        parse_mode=ParseMode.HTML,
-        reply_markup=get_cancel_keyboard()
-    )
-    return CHANNEL_NAME
-
-async def handle_channel_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка названия канала - Шаг 4"""
-    user_id = update.effective_user.id
-    text = update.message.text.strip()
-
-    if not text:
+        return
+    
+    # === Шаг 5: Ссылка для связи ===
+    if state == 'CONTACT_LINK':
+        text = update.message.text.strip()
+        if not text:
+            await update.message.reply_text(
+                "❌ Введите ссылку.",
+                reply_markup=get_cancel_keyboard()
+            )
+            return
+        
+        if not text.startswith(('http://', 'https://')):
+            text = 'https://' + text
+        
+        request_data['contact_link'] = text
+        context.user_data['request_data'] = request_data
+        context.user_data['request_state'] = 'CONDITIONS'
+        
         await update.message.reply_text(
-            "❌ Название не может быть пустым.",
-            reply_markup=get_cancel_keyboard()
+            "✅ Ссылка сохранена.\n\n"
+            "📝 <b>Шаг 6/6: отправьте желаемые условия</b>\n"
+            "Или нажмите кнопку 'Пропустить':",
+            parse_mode=ParseMode.HTML,
+            reply_markup=get_skip_keyboard()
         )
-        return CHANNEL_NAME
-
-    pending = db.get_pending_request(user_id) or {}
-    pending['channel_name'] = sanitize_text(text)
-    db.set_pending_request(user_id, pending)
-
-    await update.message.reply_text(
-        "✅ Название сохранено.\n\n"
-        "👥 <b>Шаг 4/6: количество подписчиков</b>\n"
-        "Введите только цифры (пример: 10000 или 10,000):",
-        parse_mode=ParseMode.HTML,
-        reply_markup=get_cancel_keyboard()
-    )
-    return SUBSCRIBERS
-
-async def handle_subscribers(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка количества подписчиков - Шаг 5"""
-    user_id = update.effective_user.id
-    text = update.message.text.strip()
-
-    try:
-        subs = int(text.replace(' ', '').replace(',', '').replace('.', ''))
-        if subs < 0:
-            raise ValueError
-        formatted = f"{subs:,}".replace(',', ' ')
-    except ValueError:
-        await update.message.reply_text(
-            "❌ Введите корректное число (только цифры).\n"
-            "Пример: 10000",
-            reply_markup=get_cancel_keyboard()
-        )
-        return SUBSCRIBERS
-
-    pending = db.get_pending_request(user_id) or {}
-    pending['subscribers'] = formatted
-    db.set_pending_request(user_id, pending)
-
-    await update.message.reply_text(
-        f"✅ Подписчиков: {formatted}\n\n"
-        "📞 <b>Шаг 5/6: отправьте ссылку для связи</b>\n"
-        "Telegram, email, сайт и т.д.:",
-        parse_mode=ParseMode.HTML,
-        reply_markup=get_cancel_keyboard()
-    )
-    return CONTACT_LINK
-
-async def handle_contact_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка ссылки для связи - Шаг 6"""
-    user_id = update.effective_user.id
-    text = update.message.text.strip()
-
-    if not text:
-        await update.message.reply_text(
-            "❌ Введите ссылку.",
-            reply_markup=get_cancel_keyboard()
-        )
-        return CONTACT_LINK
-
-    if not text.startswith(('http://', 'https://')):
-        text = 'https://' + text
-
-    pending = db.get_pending_request(user_id) or {}
-    pending['contact_link'] = text
-    db.set_pending_request(user_id, pending)
-
-    await update.message.reply_text(
-        "✅ Ссылка сохранена.\n\n"
-        "📝 <b>Шаг 6/6: отправьте желаемые условия</b>\n"
-        "Или нажмите /skip, чтобы пропустить:",
-        parse_mode=ParseMode.HTML,
-        reply_markup=get_skip_keyboard()
-    )
-    return CONDITIONS
-
-async def handle_conditions(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка условий - финиш"""
-    user_id = update.effective_user.id
-    text = update.message.text.strip()
-
-    pending = db.get_pending_request(user_id) or {}
-    pending['conditions'] = sanitize_text(text) if text else "Не указаны"
-    db.set_pending_request(user_id, pending)
-
-    return await finish_request(update, context)
-
-async def skip_conditions(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Пропуск условий"""
-    user_id = update.effective_user.id
-    pending = db.get_pending_request(user_id) or {}
-    pending['conditions'] = "Не указаны"
-    db.set_pending_request(user_id, pending)
-
-    await update.message.reply_text("⏭️ Условия пропущены.")
-    return await finish_request(update, context)
+        return
+    
+    # === Шаг 6: Условия ===
+    if state == 'CONDITIONS':
+        text = update.message.text.strip()
+        request_data['conditions'] = sanitize_text(text) if text else "Не указаны"
+        context.user_data['request_data'] = request_data
+        
+        # Завершаем создание запроса
+        await finish_request(update, context)
 
 async def finish_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Завершение создания запроса"""
     user = update.effective_user
     user_id = user.id
-    pending = db.get_pending_request(user_id) or {}
-
+    
+    # Получаем данные из context.user_data
+    request_data = context.user_data.get('request_data', {})
+    
     # Проверяем все поля
-    missing = [f for f in REQUIRED_FIELDS if f not in pending]
+    missing = [f for f in REQUIRED_FIELDS if f not in request_data]
     if missing:
         await update.message.reply_text(
             f"❌ Не хватает полей: {', '.join(missing)}\n"
             "Начните заново с /new_request"
         )
-        db.clear_pending_request(user_id)
-        return ConversationHandler.END
+        context.user_data.pop('request_state', None)
+        context.user_data.pop('request_data', None)
+        return
 
     # Создаем тему
-    topic_id = await create_request_topic(update, context, pending)
+    topic_id = await create_request_topic(update, context, request_data)
 
     if topic_id:
         # Сохраняем в БД
-        request_data = RequestData(
-            screenshot=pending['screenshot'],
-            media_link=pending['media_link'],
-            channel_name=pending['channel_name'],
-            subscribers=pending['subscribers'],
-            contact_link=pending['contact_link'],
-            conditions=pending['conditions'],
+        request_obj = RequestData(
+            screenshot=request_data['screenshot'],
+            media_link=request_data['media_link'],
+            channel_name=request_data['channel_name'],
+            subscribers=request_data['subscribers'],
+            contact_link=request_data['contact_link'],
+            conditions=request_data['conditions'],
             user_id=user_id,
             created_at=datetime.now().isoformat()
         )
-        db.add_topic(topic_id, request_data)
+        db.add_topic(topic_id, request_obj)
 
         await update.message.reply_text(
             f"✅ <b>Запрос успешно создан!</b>\n\n"
@@ -337,8 +327,9 @@ async def finish_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "❌ Не удалось создать запрос. Проверьте, что бот является администратором группы."
         )
 
-    db.clear_pending_request(user_id)
-    return ConversationHandler.END
+    # Очищаем состояние
+    context.user_data.pop('request_state', None)
+    context.user_data.pop('request_data', None)
 
 async def create_request_topic(update: Update, context: ContextTypes.DEFAULT_TYPE, request_data: dict) -> Optional[int]:
     """Создание темы в группе"""
@@ -580,15 +571,17 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not is_pr_manager(user_id) and not is_creator(user_id):
                 await query.edit_message_text("❌ Нет прав.")
                 return
-            db.set_pending_request(user_id, {})
+            
+            # Очищаем старые данные и устанавливаем состояние
+            context.user_data['request_state'] = 'SCREENSHOT'
+            context.user_data['request_data'] = {}
+            
             await query.edit_message_text(
                 "📝 <b>Шаг 1/6: отправьте СКРИНШОТ переписки</b>\n\n"
                 "Отправьте фото:",
                 parse_mode=ParseMode.HTML,
                 reply_markup=get_cancel_keyboard()
             )
-            # Устанавливаем состояние в context.user_data
-            context.user_data['state'] = SCREENSHOT
             return
 
         elif data == "my_requests":
@@ -707,9 +700,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
         elif data == "skip":
-            pending = db.get_pending_request(user_id) or {}
-            pending['conditions'] = "Не указаны"
-            db.set_pending_request(user_id, pending)
+            # Пропуск условий
+            request_data = context.user_data.get('request_data', {})
+            request_data['conditions'] = "Не указаны"
+            context.user_data['request_data'] = request_data
             await query.edit_message_text("⏭️ Условия пропущены.")
             # Создаем fake update для завершения
             class FakeUpdate:
@@ -723,7 +717,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await finish_request(fake_update, context)
 
         elif data == "cancel":
-            db.clear_pending_request(user_id)
+            # Отмена создания запроса
+            context.user_data.pop('request_state', None)
+            context.user_data.pop('request_data', None)
             await query.edit_message_text("❌ Операция отменена.")
             keyboard = get_main_keyboard(
                 is_admin=is_admin(user_id),
@@ -757,9 +753,3 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except:
             pass
-
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    db.clear_pending_request(user_id)
-    await update.message.reply_text("❌ Создание запроса отменено.")
-    return ConversationHandler.END
