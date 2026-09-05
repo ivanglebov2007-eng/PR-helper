@@ -3,17 +3,25 @@
 
 import logging
 import asyncio
+import warnings
 from telegram import Update
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
     MessageHandler, filters, ConversationHandler
 )
-import httpx
+from telegram.warnings import PTBUserWarning
 
 from config import BOT_TOKEN
 from database import Database
 from handlers import *
 from states import *
+
+# Игнорируем предупреждение PTB
+warnings.filterwarnings(
+    action="ignore",
+    message=r".*CallbackQueryHandler.*",
+    category=PTBUserWarning
+)
 
 # Настройка логирования
 logging.basicConfig(
@@ -26,21 +34,12 @@ logger = logging.getLogger(__name__)
 db = Database()
 
 async def main():
-    """Запуск бота с повторными попытками"""
+    """Запуск бота"""
     logger.info("🚀 Запуск бота...")
     
-    # Загружаем базу данных
     db.load()
     logger.info(f"📊 Загружено {len(db.pr_managers)} PR менеджеров")
     
-    # === НАСТРОЙКА ПРОКСИ (раскомментируйте если нужно) ===
-    # Если Telegram заблокирован, используйте прокси:
-    # 1. SOCKS5 прокси (через Tor или VPN):
-    # proxy_url = "socks5://127.0.0.1:1080"
-    # 2. HTTP прокси:
-    # proxy_url = "http://127.0.0.1:8080"
-    
-    # Создаем приложение с увеличенными таймаутами
     application = (
         Application.builder()
         .token(BOT_TOKEN)
@@ -50,27 +49,6 @@ async def main():
         .build()
     )
     
-    # Если используете прокси, добавьте это:
-    # from telegram.request import HTTPXRequest
-    # import httpx
-    # 
-    # proxy_url = "socks5://127.0.0.1:1080"  # Ваш прокси
-    # http_client = httpx.AsyncClient(
-    #     proxy=proxy_url,
-    #     timeout=httpx.Timeout(120.0, connect=60.0)
-    # )
-    # request = HTTPXRequest(http_client=http_client)
-    # application = (
-    #     Application.builder()
-    #     .token(BOT_TOKEN)
-    #     .request(request)
-    #     .connect_timeout(120.0)
-    #     .read_timeout(120.0)
-    #     .write_timeout(120.0)
-    #     .build()
-    # )
-    
-    # Conversation handler для создания запроса
     conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler('new_request', new_request_start),
@@ -110,7 +88,6 @@ async def main():
         persistent=False
     )
     
-    # Добавляем обработчики команд
     application.add_handler(CommandHandler('start', start))
     application.add_handler(conv_handler)
     application.add_handler(CommandHandler('my_requests', my_requests))
@@ -120,65 +97,33 @@ async def main():
     application.add_handler(CommandHandler('add_dep', add_dep))
     application.add_handler(CommandHandler('remove_user', remove_user))
     application.add_handler(CommandHandler('list_users', list_users))
-    
-    # Обработчик callback-запросов
     application.add_handler(CallbackQueryHandler(button_callback))
-    
-    # Обработчик ошибок
     application.add_error_handler(error_handler)
     
-    # Запускаем бота с повторными попытками при ошибках
     logger.info("✅ Бот инициализирован, запускаем polling...")
     
-    max_retries = 5
-    retry_count = 0
-    retry_delay = 10  # секунд
+    try:
+        await application.initialize()
+        await application.start()
+        
+        await application.updater.start_polling(
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True
+        )
+        
+        logger.info("🎯 Бот успешно запущен и слушает сообщения!")
+        
+        while True:
+            await asyncio.sleep(1)
+            
+    except Exception as e:
+        logger.error(f"❌ Ошибка: {e}")
+        raise
     
-    while retry_count < max_retries:
-        try:
-            # Запускаем бота
-            await application.initialize()
-            await application.start()
-            
-            # Запускаем polling
-            await application.updater.start_polling(
-                allowed_updates=Update.ALL_TYPES,
-                drop_pending_updates=True
-            )
-            
-            logger.info("🎯 Бот успешно запущен и слушает сообщения!")
-            
-            # Бесконечный цикл ожидания
-            while True:
-                await asyncio.sleep(1)
-                
-        except httpx.ConnectTimeout as e:
-            retry_count += 1
-            logger.error(f"❌ Ошибка подключения (попытка {retry_count}/{max_retries}): {e}")
-            
-            if retry_count < max_retries:
-                logger.info(f"⏳ Повторная попытка через {retry_delay} секунд...")
-                await asyncio.sleep(retry_delay)
-                retry_delay *= 2  # Увеличиваем задержку
-            else:
-                logger.error("❌ Превышено максимальное количество попыток подключения")
-                break
-                
-        except Exception as e:
-            retry_count += 1
-            logger.error(f"❌ Критическая ошибка (попытка {retry_count}/{max_retries}): {e}")
-            
-            if retry_count < max_retries:
-                logger.info(f"⏳ Перезапуск через {retry_delay} секунд...")
-                await asyncio.sleep(retry_delay)
-            else:
-                logger.error("❌ Превышено максимальное количество попыток")
-                break
-    
-    # Останавливаем бота
-    await application.stop()
-    await application.shutdown()
-    logger.info("🛑 Бот остановлен")
+    finally:
+        await application.stop()
+        await application.shutdown()
+        logger.info("🛑 Бот остановлен")
 
 if __name__ == '__main__':
     try:
