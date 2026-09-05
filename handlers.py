@@ -36,10 +36,24 @@ def is_pr_manager(user_id: int) -> bool:
 def is_creator(user_id: int) -> bool:
     return user_id == CREATOR_ID
 
-# ============ REPLY КЛАВИАТУРЫ (прикрепляются к полю ввода) ============
+# ============ ФУНКЦИЯ ДЛЯ ПОЛУЧЕНИЯ ИМЕНИ ПОЛЬЗОВАТЕЛЯ ============
+
+async def get_user_name(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> str:
+    """Получает имя пользователя по ID (username или full_name)"""
+    try:
+        chat = await context.bot.get_chat(user_id)
+        if chat.username:
+            return f"@{chat.username}"
+        elif chat.full_name:
+            return chat.full_name
+        else:
+            return str(user_id)
+    except:
+        return str(user_id)
+
+# ============ REPLY КЛАВИАТУРЫ ============
 
 def get_main_reply_keyboard(is_admin: bool = False, is_creator: bool = False) -> ReplyKeyboardMarkup:
-    """Главное меню - кнопки в поле ввода"""
     keyboard = [
         ["📝 Создать запрос"],
         ["📋 Мои запросы"],
@@ -49,7 +63,6 @@ def get_main_reply_keyboard(is_admin: bool = False, is_creator: bool = False) ->
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
 
 def get_cancel_reply_keyboard() -> ReplyKeyboardMarkup:
-    """Клавиатура с кнопкой отмены"""
     return ReplyKeyboardMarkup(
         [["❌ Отмена"]],
         resize_keyboard=True,
@@ -57,7 +70,6 @@ def get_cancel_reply_keyboard() -> ReplyKeyboardMarkup:
     )
 
 def get_skip_reply_keyboard() -> ReplyKeyboardMarkup:
-    """Клавиатура с кнопками пропуска и отмены"""
     return ReplyKeyboardMarkup(
         [
             ["⏭️ Пропустить"],
@@ -68,7 +80,6 @@ def get_skip_reply_keyboard() -> ReplyKeyboardMarkup:
     )
 
 def get_admin_reply_keyboard() -> ReplyKeyboardMarkup:
-    """Админ-панель - кнопки в поле ввода"""
     keyboard = [
         ["👥 Управление пользователями"],
         ["🔍 Поиск тем", "🔒 Закрыть тему"],
@@ -78,7 +89,6 @@ def get_admin_reply_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
 
 def get_manage_users_reply_keyboard(is_creator: bool = False, is_chief: bool = False, is_dep_chief: bool = False) -> ReplyKeyboardMarkup:
-    """Управление пользователями - кнопки в поле ввода"""
     keyboard = []
     
     if is_creator:
@@ -99,16 +109,7 @@ def get_manage_users_reply_keyboard(is_creator: bool = False, is_chief: bool = F
     
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
 
-def get_after_request_reply_keyboard() -> ReplyKeyboardMarkup:
-    """Клавиатура после создания запроса"""
-    keyboard = [
-        ["📝 Создать запрос"],
-        ["📋 Мои запросы"],
-        ["⚙️ Админ-панель"]
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
-
-# ============ INLINE КЛАВИАТУРЫ (для списка запросов) ============
+# ============ INLINE КЛАВИАТУРЫ ============
 
 def get_my_requests_inline_keyboard(topics: list) -> InlineKeyboardMarkup:
     keyboard = []
@@ -195,7 +196,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     state = context.user_data.get('request_state')
     
-    # Обработка кнопок меню
+    # Обработка кнопок меню (если нет активного состояния)
     if not state:
         if text == "📝 Создать запрос":
             await new_request_start(update, context)
@@ -243,7 +244,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await cancel_operation(update, context)
             return
         elif text == "⏭️ Пропустить":
-            # Обработка пропуска условий
             request_data = context.user_data.get('request_data', {})
             request_data['conditions'] = "Не указаны"
             context.user_data['request_data'] = request_data
@@ -524,29 +524,34 @@ async def create_request_topic(update: Update, context: ContextTypes.DEFAULT_TYP
             disable_web_page_preview=True
         )
 
+        # === ТЕГИРУЕМ CHIEF ===
+        chief_name = await get_user_name(context, CHIEF_ID)
         try:
             await context.bot.send_message(
                 chat_id=GROUP_ID,
                 message_thread_id=topic_id,
-                text=f"🔔 <a href='tg://user?id={CHIEF_ID}'>Chief</a>, новый запрос!",
+                text=f"🔔 <a href='tg://user?id={CHIEF_ID}'>{chief_name}</a>, новый запрос!",
                 parse_mode=ParseMode.HTML
             )
             logger.info("✅ Chief уведомлён")
         except Exception as e:
             logger.error(f"❌ Ошибка тегирования Chief: {e}")
 
+        # === ТЕГИРУЕМ DEP.CHIEF ===
         for dep_id in db.dep_chiefs:
+            dep_name = await get_user_name(context, dep_id)
             try:
                 await context.bot.send_message(
                     chat_id=GROUP_ID,
                     message_thread_id=topic_id,
-                    text=f"🔔 <a href='tg://user?id={dep_id}'>Dep.Chief</a>, новый запрос!",
+                    text=f"🔔 <a href='tg://user?id={dep_id}'>{dep_name}</a>, новый запрос!",
                     parse_mode=ParseMode.HTML
                 )
                 logger.info(f"✅ Dep.Chief {dep_id} уведомлён")
             except Exception as e:
                 logger.error(f"❌ Ошибка тегирования Dep.Chief {dep_id}: {e}")
 
+        # === СКРЫВАЕМ ТЕМУ ===
         try:
             admins = await context.bot.get_chat_administrators(GROUP_ID)
             
@@ -816,21 +821,49 @@ async def add_user_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not role:
         return
     
+    # Пытаемся получить ID пользователя
+    new_user_id = None
     username = text.replace('@', '')
+    
+    # Сначала пробуем как ID
     try:
         new_user_id = int(username)
     except ValueError:
+        # Если не ID, пробуем получить по username
         try:
+            # Пробуем получить chat по username
             chat = await context.bot.get_chat(f"@{username}")
             new_user_id = chat.id
-        except:
+        except Exception as e:
+            logger.error(f"Ошибка получения пользователя: {e}")
             await update.message.reply_text(
-                "❌ Не удалось найти пользователя. Проверьте username или ID.",
+                "❌ Не удалось найти пользователя.\n\n"
+                "Проверьте, что:\n"
+                "1. Username введён корректно (например, @john)\n"
+                "2. У пользователя есть публичный username\n"
+                "3. Пользователь существует в Telegram\n\n"
+                "Попробуйте ещё раз или нажмите 'Отмена'.",
                 reply_markup=get_cancel_reply_keyboard()
             )
             return
     
+    if not new_user_id:
+        await update.message.reply_text(
+            "❌ Не удалось определить ID пользователя.",
+            reply_markup=get_cancel_reply_keyboard()
+        )
+        return
+    
+    # Проверяем, что пользователь не является Chief или Creator
+    if new_user_id == CHIEF_ID:
+        await update.message.reply_text("❌ Это Chief PR Manager. Его нельзя добавить повторно.")
+        return
+    if new_user_id == CREATOR_ID:
+        await update.message.reply_text("❌ Это Создатель. Его нельзя добавить повторно.")
+        return
+    
     success = False
+    
     if role == "creator":
         if is_creator(user_id):
             success = db.add_pr_manager(new_user_id)
@@ -874,8 +907,8 @@ async def add_user_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 chat_id=new_user_id,
                 text=f"🎉 Вас добавили в систему PR Manager бота!\n\nВаша роль: {role.upper()}\nИспользуйте /start для начала работы."
             )
-        except:
-            pass
+        except Exception as e:
+            logger.warning(f"Не удалось отправить уведомление пользователю {new_user_id}: {e}")
         
         keyboard = get_manage_users_reply_keyboard(
             is_creator=is_creator(user_id),
@@ -912,6 +945,10 @@ async def remove_user_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def remove_user_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text.strip()
+    
+    if text == "❌ Отмена":
+        await cancel_operation(update, context)
+        return
     
     try:
         remove_id = int(text)
@@ -961,17 +998,24 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if db.pr_managers:
         text += "👤 <b>PR Managers:</b>\n"
         for uid in db.pr_managers:
-            text += f"• <a href='tg://user?id={uid}'>{uid}</a>\n"
+            name = await get_user_name(context, uid)
+            text += f"• <a href='tg://user?id={uid}'>{name}</a>\n"
         text += "\n"
 
     if db.dep_chiefs:
         text += "👤 <b>Dep.Chief:</b>\n"
         for uid in db.dep_chiefs:
-            text += f"• <a href='tg://user?id={uid}'>{uid}</a>\n"
+            name = await get_user_name(context, uid)
+            text += f"• <a href='tg://user?id={uid}'>{name}</a>\n"
         text += "\n"
 
-    text += f"👑 <b>Chief PR Manager:</b>\n• <a href='tg://user?id={CHIEF_ID}'>{CHIEF_ID}</a>\n\n"
-    text += f"👑 <b>Creator:</b>\n• <a href='tg://user?id={CREATOR_ID}'>{CREATOR_ID}</a>"
+    # Chief
+    chief_name = await get_user_name(context, CHIEF_ID)
+    text += f"👑 <b>Chief PR Manager:</b>\n• <a href='tg://user?id={CHIEF_ID}'>{chief_name}</a>\n\n"
+
+    # Creator
+    creator_name = await get_user_name(context, CREATOR_ID)
+    text += f"👑 <b>Creator:</b>\n• <a href='tg://user?id={CREATOR_ID}'>{creator_name}</a>"
 
     keyboard = get_manage_users_reply_keyboard(
         is_creator=is_creator(user_id),
@@ -998,7 +1042,8 @@ async def search_topics_prompt(update: Update, context: ContextTypes.DEFAULT_TYP
     await update.message.reply_text(
         "🔍 <b>Поиск тем</b>\n\n"
         "Введите ключевое слово для поиска:\n\n"
-        "Пример: канал",
+        "Пример: канал\n\n"
+        "Для отмены нажмите 'Отмена'.",
         parse_mode=ParseMode.HTML,
         reply_markup=get_cancel_reply_keyboard()
     )
@@ -1006,6 +1051,10 @@ async def search_topics_prompt(update: Update, context: ContextTypes.DEFAULT_TYP
 async def search_topics_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text.strip()
+    
+    if text == "❌ Отмена":
+        await cancel_operation(update, context)
+        return
     
     if not text:
         await update.message.reply_text(
@@ -1051,7 +1100,8 @@ async def close_topic_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await update.message.reply_text(
         "🔒 <b>Закрытие темы</b>\n\n"
         "Введите ID темы, которую хотите закрыть:\n\n"
-        "ID темы можно найти через поиск.",
+        "ID темы можно найти через поиск.\n\n"
+        "Для отмены нажмите 'Отмена'.",
         parse_mode=ParseMode.HTML,
         reply_markup=get_cancel_reply_keyboard()
     )
@@ -1059,6 +1109,10 @@ async def close_topic_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def close_topic_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     text = update.message.text.strip()
+    
+    if text == "❌ Отмена":
+        await cancel_operation(update, context)
+        return
     
     try:
         topic_id = int(text)
@@ -1139,7 +1193,7 @@ async def cancel_operation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     )
 
-# ============ ОБРАБОТЧИК КНОПОК ============
+# ============ ОБРАБОТЧИК КНОПОК (INLINE) ============
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
