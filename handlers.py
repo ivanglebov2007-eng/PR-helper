@@ -51,6 +51,60 @@ async def get_user_name(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> str
     except:
         return str(user_id)
 
+# ============ ПОИСК ПОЛЬЗОВАТЕЛЯ ПО USERNAME ============
+
+async def find_user_by_username(context: ContextTypes.DEFAULT_TYPE, username: str) -> Optional[int]:
+    """Ищет пользователя по username среди всех, кто взаимодействовал с ботом"""
+    username = username.lower().replace('@', '')
+    
+    # 1. Пробуем найти через get_chat (если пользователь писал боту)
+    try:
+        chat = await context.bot.get_chat(f"@{username}")
+        logger.info(f"Найден пользователь через get_chat: {chat.full_name} (ID: {chat.id})")
+        return chat.id
+    except Exception as e:
+        logger.debug(f"get_chat не сработал: {e}")
+    
+    # 2. Проверяем PR менеджеров
+    for uid in db.pr_managers:
+        try:
+            chat = await context.bot.get_chat(uid)
+            if chat.username and chat.username.lower() == username:
+                logger.info(f"Найден PR Manager: {chat.full_name} (ID: {uid})")
+                return uid
+        except:
+            pass
+    
+    # 3. Проверяем Dep.Chief
+    for uid in db.dep_chiefs:
+        try:
+            chat = await context.bot.get_chat(uid)
+            if chat.username and chat.username.lower() == username:
+                logger.info(f"Найден Dep.Chief: {chat.full_name} (ID: {uid})")
+                return uid
+        except:
+            pass
+    
+    # 4. Проверяем Chief
+    try:
+        chat = await context.bot.get_chat(CHIEF_ID)
+        if chat.username and chat.username.lower() == username:
+            logger.info(f"Найден Chief: {chat.full_name}")
+            return CHIEF_ID
+    except:
+        pass
+    
+    # 5. Проверяем Creator
+    try:
+        chat = await context.bot.get_chat(CREATOR_ID)
+        if chat.username and chat.username.lower() == username:
+            logger.info(f"Найден Creator: {chat.full_name}")
+            return CREATOR_ID
+    except:
+        pass
+    
+    return None
+
 # ============ REPLY КЛАВИАТУРЫ ============
 
 def get_main_reply_keyboard(is_admin: bool = False, is_creator: bool = False) -> ReplyKeyboardMarkup:
@@ -859,6 +913,7 @@ async def add_user_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Пытаемся получить ID пользователя
     new_user_id = None
+    found_user_info = None
     
     # Убираем @ если есть
     username = text.replace('@', '').strip()
@@ -867,58 +922,72 @@ async def add_user_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if username.isdigit():
         new_user_id = int(username)
         logger.info(f"Пользователь введён как ID: {new_user_id}")
-    else:
-        # Ищем по username через get_chat
         try:
-            logger.info(f"Ищем пользователя по username: @{username}")
+            chat = await context.bot.get_chat(new_user_id)
+            found_user_info = chat
+            logger.info(f"Найден пользователь по ID: {chat.full_name}")
+        except:
+            pass
+    else:
+        # 1. Пробуем найти через get_chat (если пользователь писал боту)
+        try:
+            logger.info(f"Пробуем найти @{username} через get_chat...")
             chat = await context.bot.get_chat(f"@{username}")
             new_user_id = chat.id
-            logger.info(f"Найден пользователь: {chat.full_name} (ID: {chat.id})")
+            found_user_info = chat
+            logger.info(f"Найден пользователь через get_chat: {chat.full_name} (ID: {chat.id})")
         except Exception as e:
-            logger.error(f"Ошибка поиска по username: {e}")
-            
-            # Если не найден, проверяем есть ли пользователь в БД
-            # (если он уже писал боту)
+            logger.debug(f"get_chat не сработал: {e}")
+        
+        # 2. Проверяем PR менеджеров
+        if not new_user_id:
+            logger.info(f"Ищем @{username} среди PR менеджеров...")
             for uid in db.pr_managers:
                 try:
                     chat = await context.bot.get_chat(uid)
-                    if chat.username and chat.username.lower() == username.lower():
+                    if chat.username and chat.username.lower() == username:
                         new_user_id = uid
-                        logger.info(f"Найден пользователь в БД: {chat.full_name} (ID: {uid})")
+                        found_user_info = chat
+                        logger.info(f"Найден PR Manager: {chat.full_name} (ID: {uid})")
                         break
                 except:
                     pass
-            
-            # Проверяем среди dep_chiefs
-            if not new_user_id:
-                for uid in db.dep_chiefs:
-                    try:
-                        chat = await context.bot.get_chat(uid)
-                        if chat.username and chat.username.lower() == username.lower():
-                            new_user_id = uid
-                            logger.info(f"Найден Dep.Chief в БД: {chat.full_name} (ID: {uid})")
-                            break
-                    except:
-                        pass
-            
-            # Проверяем Chief и Creator
-            if not new_user_id:
+        
+        # 3. Проверяем Dep.Chief
+        if not new_user_id:
+            logger.info(f"Ищем @{username} среди Dep.Chief...")
+            for uid in db.dep_chiefs:
                 try:
-                    chat = await context.bot.get_chat(CHIEF_ID)
-                    if chat.username and chat.username.lower() == username.lower():
-                        new_user_id = CHIEF_ID
-                        logger.info(f"Найден Chief: {chat.full_name} (ID: {CHIEF_ID})")
+                    chat = await context.bot.get_chat(uid)
+                    if chat.username and chat.username.lower() == username:
+                        new_user_id = uid
+                        found_user_info = chat
+                        logger.info(f"Найден Dep.Chief: {chat.full_name} (ID: {uid})")
+                        break
                 except:
                     pass
-            
-            if not new_user_id:
-                try:
-                    chat = await context.bot.get_chat(CREATOR_ID)
-                    if chat.username and chat.username.lower() == username.lower():
-                        new_user_id = CREATOR_ID
-                        logger.info(f"Найден Creator: {chat.full_name} (ID: {CREATOR_ID})")
-                except:
-                    pass
+        
+        # 4. Проверяем Chief
+        if not new_user_id:
+            try:
+                chat = await context.bot.get_chat(CHIEF_ID)
+                if chat.username and chat.username.lower() == username:
+                    new_user_id = CHIEF_ID
+                    found_user_info = chat
+                    logger.info(f"Найден Chief: {chat.full_name}")
+            except:
+                pass
+        
+        # 5. Проверяем Creator
+        if not new_user_id:
+            try:
+                chat = await context.bot.get_chat(CREATOR_ID)
+                if chat.username and chat.username.lower() == username:
+                    new_user_id = CREATOR_ID
+                    found_user_info = chat
+                    logger.info(f"Найден Creator: {chat.full_name}")
+            except:
+                pass
     
     if not new_user_id:
         await update.message.reply_text(
@@ -926,11 +995,11 @@ async def add_user_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Проверьте, что:\n"
             "1. Username введён корректно (например, @john)\n"
             "2. У пользователя есть публичный username\n"
-            "3. Пользователь существует в Telegram\n\n"
+            "3. Пользователь написал боту /start\n\n"
             "💡 <b>Совет:</b>\n"
-            "1. Попросите пользователя написать боту в ЛС: /start\n"
-            "2. После этого бот сможет найти его по username\n"
-            "3. Или введите ID пользователя (цифры)\n\n"
+            "1. Попросите пользователя ещё раз написать боту: /start\n"
+            "2. После этого попробуйте снова\n"
+            "3. Или используйте ID пользователя (цифры)\n\n"
             "Или нажмите 'Отмена'.",
             parse_mode=ParseMode.HTML,
             reply_markup=get_cancel_reply_keyboard()
@@ -944,6 +1013,21 @@ async def add_user_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if new_user_id == CREATOR_ID:
         await update.message.reply_text("❌ Это Создатель. Его нельзя добавить повторно.")
         return
+    
+    # Показываем информацию о найденном пользователе
+    user_info_text = str(new_user_id)
+    if found_user_info:
+        if found_user_info.username:
+            user_info_text = f"@{found_user_info.username}"
+        elif found_user_info.full_name:
+            user_info_text = found_user_info.full_name
+    
+    await update.message.reply_text(
+        f"🔍 Найден пользователь: <b>{user_info_text}</b>\n"
+        f"🆔 ID: <code>{new_user_id}</code>\n\n"
+        f"Добавляем...",
+        parse_mode=ParseMode.HTML
+    )
     
     success = False
     
