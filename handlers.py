@@ -1,6 +1,6 @@
 import logging
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Optional
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
@@ -10,14 +10,16 @@ from config import CHIEF_ID, CREATOR_ID, GROUP_ID, REQUIRED_FIELDS
 from database import Database, RequestData
 from states import *
 from utils import (
-    validate_media_link, validate_url, format_subscribers,
-    format_date, sanitize_text, truncate_text
+    validate_media_link,
+    format_date,
+    sanitize_text,
+    truncate_text
 )
 
 logger = logging.getLogger(__name__)
 db = Database()
 
-# ============ Проверка прав ============
+# ============ ПРОВЕРКА ПРАВ ============
 
 def is_chief(user_id: int) -> bool:
     return user_id == CHIEF_ID
@@ -29,316 +31,251 @@ def is_admin(user_id: int) -> bool:
     return is_chief(user_id) or is_dep_chief(user_id)
 
 def is_pr_manager(user_id: int) -> bool:
-    return user_id in db.pr_managers or is_admin(user_id)
+    return user_id in db.pr_managers or is_admin(user_id) or is_creator(user_id)
 
 def is_creator(user_id: int) -> bool:
     return user_id == CREATOR_ID
 
-# ============ Клавиатуры ============
+# ============ КЛАВИАТУРЫ ============
 
 def get_main_keyboard(is_admin: bool = False, is_creator: bool = False) -> InlineKeyboardMarkup:
-    """Главное меню"""
     keyboard = [
         [InlineKeyboardButton("📝 Создать запрос", callback_data="new_request")],
         [InlineKeyboardButton("📋 Мои запросы", callback_data="my_requests")],
     ]
-    
     if is_admin or is_creator:
         keyboard.extend([
             [InlineKeyboardButton("🔍 Поиск тем", callback_data="search")],
             [InlineKeyboardButton("👥 Управление пользователями", callback_data="manage_users")],
             [InlineKeyboardButton("🔒 Закрыть тему", callback_data="close_topic")]
         ])
-    
     if is_creator:
-        keyboard.append(
-            [InlineKeyboardButton("⚙️ Настройки бота", callback_data="settings")]
-        )
-    
+        keyboard.append([InlineKeyboardButton("⚙️ Настройки", callback_data="settings")])
     return InlineKeyboardMarkup(keyboard)
 
 def get_cancel_keyboard() -> InlineKeyboardMarkup:
-    """Клавиатура для отмены"""
-    keyboard = [
-        [InlineKeyboardButton("❌ Отмена", callback_data="cancel")]
-    ]
-    return InlineKeyboardMarkup(keyboard)
+    return InlineKeyboardMarkup([[InlineKeyboardButton("❌ Отмена", callback_data="cancel")]])
 
 def get_skip_keyboard() -> InlineKeyboardMarkup:
-    """Клавиатура для пропуска условий"""
-    keyboard = [
+    return InlineKeyboardMarkup([
         [InlineKeyboardButton("⏭️ Пропустить", callback_data="skip")],
         [InlineKeyboardButton("❌ Отмена", callback_data="cancel")]
-    ]
-    return InlineKeyboardMarkup(keyboard)
+    ])
 
 def get_admin_keyboard() -> InlineKeyboardMarkup:
-    """Административное меню"""
-    keyboard = [
+    return InlineKeyboardMarkup([
         [InlineKeyboardButton("➕ Добавить PR", callback_data="add_pr")],
         [InlineKeyboardButton("👤 Добавить Dep.Chief", callback_data="add_dep")],
         [InlineKeyboardButton("➖ Удалить пользователя", callback_data="remove_user")],
         [InlineKeyboardButton("📋 Список пользователей", callback_data="list_users")],
         [InlineKeyboardButton("🔙 Назад", callback_data="back_to_main")]
-    ]
-    return InlineKeyboardMarkup(keyboard)
+    ])
 
-# ============ Основные команды ============
+# ============ КОМАНДА /start ============
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка команды /start"""
     user = update.effective_user
     user_id = user.id
-    
-    # Проверяем доступ
+
     if not is_pr_manager(user_id) and not is_creator(user_id):
         await update.message.reply_text(
-            "❌ У вас нет доступа к этому боту.\n\n"
-            "Обратитесь к Chief PR Manager для получения доступа.",
+            "❌ У вас нет доступа.\nОбратитесь к Chief PR Manager.",
             reply_markup=get_cancel_keyboard()
         )
         return
-    
-    # Приветственное сообщение
-    welcome_text = f"👋 <b>Добро пожаловать, {sanitize_text(user.full_name)}!</b>\n\n"
-    
+
+    text = f"👋 <b>Добро пожаловать, {sanitize_text(user.full_name)}!</b>\n\n"
     if is_creator(user_id):
-        welcome_text += (
-            "🤖 <b>Вы - Создатель бота</b>\n\n"
-            "Доступны все функции управления."
-        )
+        text += "🤖 <b>Вы — Создатель</b>\nДоступны все функции."
     elif is_admin(user_id):
-        welcome_text += "👑 <b>Вы - администратор</b>\n\nДоступны все функции управления."
+        text += "👑 <b>Вы — администратор</b>"
     else:
-        welcome_text += "📝 <b>Вы - PR Manager</b>\n\nДоступно создание запросов и просмотр своих заявок."
-    
-    keyboard = get_main_keyboard(
-        is_admin=is_admin(user_id),
-        is_creator=is_creator(user_id)
-    )
-    
+        text += "📝 <b>Вы — PR Manager</b>"
+
     await update.message.reply_text(
-        welcome_text,
+        text,
         parse_mode=ParseMode.HTML,
-        reply_markup=keyboard
+        reply_markup=get_main_keyboard(
+            is_admin=is_admin(user_id),
+            is_creator=is_creator(user_id)
+        )
     )
 
-# ============ Создание запроса ============
+# ============ СОЗДАНИЕ ЗАПРОСА ============
 
 async def new_request_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Начало создания нового запроса"""
     user_id = update.effective_user.id
-    
-    if not is_pr_manager(user_id):
-        await update.message.reply_text("❌ У вас нет прав для создания запросов.")
+
+    if not is_pr_manager(user_id) and not is_creator(user_id):
+        await update.message.reply_text("❌ Нет прав.")
         return ConversationHandler.END
-    
-    # Очищаем временные данные
+
     db.set_pending_request(user_id, {})
-    
     await update.message.reply_text(
-        "📝 <b>Создание нового запроса</b>\n\n"
-        "Шаг 1 из 6: Отправьте <b>скриншот переписки с медиа</b> (файл изображения):\n\n"
-        "Для отмены отправьте /cancel",
+        "📝 <b>Шаг 1/6: отправьте СКРИНШОТ переписки</b>",
         parse_mode=ParseMode.HTML,
         reply_markup=get_cancel_keyboard()
     )
     return SCREENSHOT
 
 async def handle_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка скриншота"""
     user_id = update.effective_user.id
     photo = update.message.photo
-    
+
     if not photo:
         await update.message.reply_text(
-            "❌ Пожалуйста, отправьте скриншот как изображение (фото).\n"
-            "Или отправьте /cancel для отмены.",
+            "❌ Отправьте фото.",
             reply_markup=get_cancel_keyboard()
         )
         return SCREENSHOT
-    
+
     try:
-        # Получаем ссылку на фото
         file = await photo[-1].get_file()
         file_url = file.file_path
-        
-        # Сохраняем во временные данные
+
         pending = db.get_pending_request(user_id) or {}
         pending['screenshot'] = file_url
         db.set_pending_request(user_id, pending)
-        
+
         await update.message.reply_text(
             "✅ Скриншот получен!\n\n"
-            "Шаг 2 из 6: Отправьте <b>ссылку на канал</b> (YouTube, Twitch или TikTok):\n\n"
-            "Пример: https://www.youtube.com/@channel",
+            "📎 <b>Шаг 2/6: ссылка на канал</b> (YouTube, Twitch, TikTok)",
             parse_mode=ParseMode.HTML,
             reply_markup=get_cancel_keyboard()
         )
         return MEDIA_LINK
-        
+
     except Exception as e:
-        logger.error(f"Ошибка обработки скриншота: {e}")
-        await update.message.reply_text(
-            "❌ Произошла ошибка. Попробуйте еще раз или отправьте /cancel"
-        )
+        logger.error(f"Ошибка скриншота: {e}")
+        await update.message.reply_text("❌ Ошибка, попробуйте ещё раз.")
         return SCREENSHOT
 
 async def handle_media_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка ссылки на медиа"""
     user_id = update.effective_user.id
     text = update.message.text.strip()
-    
+
     if not validate_media_link(text):
         await update.message.reply_text(
-            "❌ Пожалуйста, отправьте корректную ссылку на YouTube, Twitch или TikTok.\n"
-            "Ссылка должна начинаться с http:// или https://\n\n"
-            "Или отправьте /cancel для отмены.",
+            "❌ Некорректная ссылка.\nНужно http:// и YouTube/Twitch/TikTok",
             reply_markup=get_cancel_keyboard()
         )
         return MEDIA_LINK
-    
+
     pending = db.get_pending_request(user_id) or {}
     pending['media_link'] = text
     db.set_pending_request(user_id, pending)
-    
+
     await update.message.reply_text(
-        "✅ Ссылка получена!\n\n"
-        "Шаг 3 из 6: Отправьте <b>название канала</b>:",
+        "✅ Ссылка принята.\n\n"
+        "📌 <b>Шаг 3/6: название канала</b>",
         parse_mode=ParseMode.HTML,
         reply_markup=get_cancel_keyboard()
     )
     return CHANNEL_NAME
 
 async def handle_channel_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка названия канала"""
     user_id = update.effective_user.id
     text = update.message.text.strip()
-    
+
     if not text:
-        await update.message.reply_text(
-            "❌ Название канала не может быть пустым.\n"
-            "Отправьте /cancel для отмены.",
-            reply_markup=get_cancel_keyboard()
-        )
+        await update.message.reply_text("❌ Название не может быть пустым.", reply_markup=get_cancel_keyboard())
         return CHANNEL_NAME
-    
+
     pending = db.get_pending_request(user_id) or {}
     pending['channel_name'] = sanitize_text(text)
     db.set_pending_request(user_id, pending)
-    
+
     await update.message.reply_text(
-        "✅ Название получено!\n\n"
-        "Шаг 4 из 6: Отправьте <b>количество подписчиков</b> (только цифры):\n\n"
-        "Примеры: 10000 или 10,000",
+        "✅ Название сохранено.\n\n"
+        "👥 <b>Шаг 4/6: количество подписчиков</b> (только цифры)",
         parse_mode=ParseMode.HTML,
         reply_markup=get_cancel_keyboard()
     )
     return SUBSCRIBERS
 
 async def handle_subscribers(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка количества подписчиков"""
     user_id = update.effective_user.id
     text = update.message.text.strip()
-    
+
     try:
-        subs = int(text.replace(' ', '').replace(',', '').replace('.', ''))
-        if subs < 0:
-            raise ValueError
-        formatted_subs = f"{subs:,}".replace(',', ' ')
+        subs = int(text.replace(' ', '').replace(',', ''))
+        formatted = f"{subs:,}".replace(',', ' ')
     except ValueError:
         await update.message.reply_text(
-            "❌ Пожалуйста, отправьте число (количество подписчиков).\n"
-            "Примеры: 10000 или 10,000\n\n"
-            "Отправьте /cancel для отмены.",
+            "❌ Введите число.",
             reply_markup=get_cancel_keyboard()
         )
         return SUBSCRIBERS
-    
+
     pending = db.get_pending_request(user_id) or {}
-    pending['subscribers'] = formatted_subs
+    pending['subscribers'] = formatted
     db.set_pending_request(user_id, pending)
-    
+
     await update.message.reply_text(
-        f"✅ Количество подписчиков: {formatted_subs}\n\n"
-        "Шаг 5 из 6: Отправьте <b>ссылку на способ связи с медиа</b> "
-        "(Telegram, email, сайт и т.д.):\n\n"
-        "Пример: https://t.me/username",
+        f"✅ Подписчиков: {formatted}\n\n"
+        "📞 <b>Шаг 5/6: ссылка для связи</b>",
         parse_mode=ParseMode.HTML,
         reply_markup=get_cancel_keyboard()
     )
     return CONTACT_LINK
 
 async def handle_contact_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка ссылки на способ связи"""
     user_id = update.effective_user.id
     text = update.message.text.strip()
-    
+
     if not text:
-        await update.message.reply_text(
-            "❌ Ссылка не может быть пустой.\n"
-            "Отправьте /cancel для отмены.",
-            reply_markup=get_cancel_keyboard()
-        )
+        await update.message.reply_text("❌ Введите ссылку.", reply_markup=get_cancel_keyboard())
         return CONTACT_LINK
-    
-    # Добавляем https если нет
+
     if not text.startswith(('http://', 'https://')):
         text = 'https://' + text
-    
+
     pending = db.get_pending_request(user_id) or {}
     pending['contact_link'] = text
     db.set_pending_request(user_id, pending)
-    
+
     await update.message.reply_text(
-        "✅ Ссылка получена!\n\n"
-        "Шаг 6 из 6: Отправьте <b>желаемые условия от медиа-партнера</b> "
-        "(можно пропустить, нажав /skip):",
+        "✅ Ссылка сохранена.\n\n"
+        "📝 <b>Шаг 6/6: условия</b> (или /skip)",
         parse_mode=ParseMode.HTML,
         reply_markup=get_skip_keyboard()
     )
     return CONDITIONS
 
 async def handle_conditions(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка условий"""
     user_id = update.effective_user.id
     text = update.message.text.strip()
-    
+
     pending = db.get_pending_request(user_id) or {}
     pending['conditions'] = sanitize_text(text) if text else "Не указаны"
     db.set_pending_request(user_id, pending)
-    
+
     return await finish_request(update, context)
 
 async def skip_conditions(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Пропуск условий"""
     user_id = update.effective_user.id
     pending = db.get_pending_request(user_id) or {}
     pending['conditions'] = "Не указаны"
     db.set_pending_request(user_id, pending)
-    
+
     await update.message.reply_text("⏭️ Условия пропущены.")
     return await finish_request(update, context)
 
 async def finish_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Завершение создания запроса"""
     user = update.effective_user
     user_id = user.id
     pending = db.get_pending_request(user_id) or {}
-    
-    # Проверяем наличие всех обязательных полей
+
     missing = [f for f in REQUIRED_FIELDS if f not in pending]
     if missing:
         await update.message.reply_text(
-            f"❌ Ошибка: не все обязательные поля заполнены: {', '.join(missing)}\n"
-            "Пожалуйста, начните заново с /new_request"
+            f"❌ Не хватает: {', '.join(missing)}.\nНачните заново /new_request"
         )
         db.clear_pending_request(user_id)
         return ConversationHandler.END
-    
-    # Создаем тему в группе
+
     topic_id = await create_request_topic(update, context, pending)
-    
+
     if topic_id:
         request_data = RequestData(
             screenshot=pending['screenshot'],
@@ -351,564 +288,382 @@ async def finish_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
             created_at=datetime.now().isoformat()
         )
         db.add_topic(topic_id, request_data)
-        
+
         await update.message.reply_text(
-            "✅ <b>Запрос успешно создан!</b>\n\n"
-            f"📌 Тема создана в группе и отмечена для Chief PR Manager.\n"
-            f"🆔 ID темы: <code>{topic_id}</code>\n\n"
-            "Ожидайте ответа от руководства.",
+            f"✅ <b>Запрос создан!</b>\n🆔 ID темы: <code>{topic_id}</code>",
             parse_mode=ParseMode.HTML
         )
     else:
-        await update.message.reply_text(
-            "❌ Не удалось создать запрос. Пожалуйста, попробуйте позже."
-        )
-    
+        await update.message.reply_text("❌ Не удалось создать запрос.")
+
     db.clear_pending_request(user_id)
     return ConversationHandler.END
 
 async def create_request_topic(update: Update, context: ContextTypes.DEFAULT_TYPE, request_data: dict) -> Optional[int]:
-    """Создание темы в группе с запросом"""
     user = update.effective_user
-    topic_title = f"Запрос от {user.full_name} - {request_data['channel_name']}"
-    
+    topic_title = f"Запрос от {user.full_name} — {request_data['channel_name']}"
+
     try:
-        # Создаем тему
         topic = await context.bot.create_forum_topic(
             chat_id=GROUP_ID,
             name=topic_title[:255]
         )
         topic_id = topic.message_thread_id
-        
-        # Формируем сообщение
-        message_text = (
-            f"📢 <b>НОВЫЙ ЗАПРОС НА МЕДИА-ПАРТНЕРСТВО</b>\n\n"
-            f"👤 <b>PR Менеджер:</b> {sanitize_text(user.full_name)} "
-            f"(@{user.username or 'нет username'})\n"
-            f"📱 <b>ID:</b> <code>{user.id}</code>\n"
-            f"📅 <b>Дата:</b> {format_date(datetime.now().isoformat())}\n\n"
-            f"📌 <b>Название канала:</b> {sanitize_text(request_data['channel_name'])}\n"
-            f"👥 <b>Подписчиков:</b> {request_data['subscribers']}\n"
-            f"🔗 <b>Ссылка на медиа:</b> <a href='{request_data['media_link']}'>Ссылка</a>\n"
-            f"📎 <b>Скриншот переписки:</b> <a href='{request_data['screenshot']}'>Смотреть</a>\n"
-            f"📞 <b>Способ связи:</b> <a href='{request_data['contact_link']}'>Ссылка</a>\n"
-            f"📝 <b>Желаемые условия:</b>\n{sanitize_text(request_data['conditions'])}\n\n"
-            f"🔔 <b>Ожидайте ответа от руководства!</b>"
+
+        text = (
+            f"📢 <b>НОВЫЙ ЗАПРОС</b>\n\n"
+            f"👤 {sanitize_text(user.full_name)} (@{user.username or 'нет'})\n"
+            f"📅 {format_date(datetime.now().isoformat())}\n\n"
+            f"📌 {sanitize_text(request_data['channel_name'])}\n"
+            f"👥 {request_data['subscribers']}\n"
+            f"🔗 <a href='{request_data['media_link']}'>Ссылка</a>\n"
+            f"📎 <a href='{request_data['screenshot']}'>Скриншот</a>\n"
+            f"📞 <a href='{request_data['contact_link']}'>Связь</a>\n"
+            f"📝 {sanitize_text(request_data['conditions'])}"
         )
-        
-        # Отправляем сообщение в тему
+
         await context.bot.send_message(
             chat_id=GROUP_ID,
             message_thread_id=topic_id,
-            text=message_text,
+            text=text,
             parse_mode=ParseMode.HTML,
             disable_web_page_preview=True
         )
-        
-        # Пинуем чифа и деп.чифа
+
         mentions = [f"<a href='tg://user?id={CHIEF_ID}'>Chief</a>"]
         for dep_id in db.dep_chiefs:
             mentions.append(f"<a href='tg://user?id={dep_id}'>Dep.Chief</a>")
-        
+
         await context.bot.send_message(
             chat_id=GROUP_ID,
             message_thread_id=topic_id,
-            text=f"🔔 Внимание! Новый запрос!\n\n{', '.join(mentions)}",
+            text=f"🔔 Новый запрос!\n{', '.join(mentions)}",
             parse_mode=ParseMode.HTML
         )
-        
+
         return topic_id
-        
+
     except Exception as e:
         logger.error(f"Ошибка создания темы: {e}")
         return None
 
-# ============ Остальные команды ============
+# ============ ОСТАЛЬНЫЕ КОМАНДЫ ============
 
 async def my_requests(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показать запросы пользователя"""
     user_id = update.effective_user.id
     topics = db.get_user_topics(user_id)
-    
+
     if not topics:
-        await update.message.reply_text("📋 У вас пока нет созданных запросов.")
+        await update.message.reply_text("📋 У вас нет запросов.")
         return
-    
-    message = "📋 <b>Ваши запросы:</b>\n\n"
-    for topic_id in topics:
-        if topic_id in db.topics:
-            data = db.topics[topic_id]
+
+    text = "📋 <b>Ваши запросы:</b>\n\n"
+    for tid in topics:
+        data = db.topics.get(tid)
+        if data:
             status = "🟢 Активна" if data.is_active else "🔴 Закрыта"
-            message += (
-                f"• <b>{sanitize_text(data.channel_name)}</b>\n"
-                f"  ID: <code>{topic_id}</code> | {status}\n"
-                f"  📅 {format_date(data.created_at)}\n"
-                f"  👥 {data.subscribers}\n\n"
-            )
-    
-    await update.message.reply_text(message, parse_mode=ParseMode.HTML)
+            text += f"• <b>{sanitize_text(data.channel_name)}</b>\n  ID: <code>{tid}</code> | {status}\n\n"
+
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 async def close_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Закрытие темы"""
     user_id = update.effective_user.id
-    
     if not is_admin(user_id) and not is_creator(user_id):
-        await update.message.reply_text("❌ У вас нет прав для закрытия тем.")
+        await update.message.reply_text("❌ Нет прав.")
         return
-    
+
     args = context.args
     if not args:
-        await update.message.reply_text(
-            "❌ Укажите ID темы для закрытия.\n"
-            "Пример: /close_topic 123\n\n"
-            "ID темы можно найти в сообщении или через /search"
-        )
+        await update.message.reply_text("❌ /close_topic <id>")
         return
-    
+
     try:
         topic_id = int(args[0])
-        
         if topic_id not in db.topics:
             await update.message.reply_text("❌ Тема не найдена.")
             return
-        
         if not db.topics[topic_id].is_active:
-            await update.message.reply_text("❌ Тема уже закрыта.")
+            await update.message.reply_text("❌ Уже закрыта.")
             return
-        
-        if db.close_topic(topic_id, user_id):
-            await context.bot.send_message(
-                chat_id=GROUP_ID,
-                message_thread_id=topic_id,
-                text=f"🔒 Тема закрыта администратором."
-            )
-            
-            await update.message.reply_text(f"✅ Тема {topic_id} успешно закрыта.")
-        else:
-            await update.message.reply_text("❌ Ошибка при закрытии темы.")
-            
+
+        db.close_topic(topic_id, user_id)
+        await context.bot.send_message(
+            chat_id=GROUP_ID,
+            message_thread_id=topic_id,
+            text="🔒 Тема закрыта."
+        )
+        await update.message.reply_text(f"✅ Тема {topic_id} закрыта.")
     except ValueError:
-        await update.message.reply_text("❌ ID темы должен быть числом.")
-    except Exception as e:
-        logger.error(f"Ошибка закрытия темы: {e}")
-        await update.message.reply_text("❌ Произошла ошибка при закрытии темы.")
+        await update.message.reply_text("❌ ID должен быть числом.")
 
 async def search_topics(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Поиск тем по ключевым словам"""
     user_id = update.effective_user.id
-    
     if not is_admin(user_id) and not is_creator(user_id):
-        await update.message.reply_text("❌ У вас нет прав для поиска тем.")
+        await update.message.reply_text("❌ Нет прав.")
         return
-    
+
     args = context.args
     if not args:
-        await update.message.reply_text(
-            "❌ Укажите ключевое слово для поиска.\n"
-            "Пример: /search канал\n"
-            "или /search \"название канала\""
-        )
+        await update.message.reply_text("❌ /search <слово>")
         return
-    
+
     keyword = ' '.join(args).lower()
     results = db.search_topics(keyword)
-    
-    if results:
-        message = f"🔍 <b>Результаты поиска по '{keyword}':</b>\n\n"
-        for topic_id, data in results:
-            message += (
-                f"• ID: <code>{topic_id}</code> | {sanitize_text(data.channel_name)}\n"
-                f"  👥 {data.subscribers} | 📅 {format_date(data.created_at)}\n"
-                f"  📝 {truncate_text(data.conditions, 50)}\n\n"
-            )
-        await update.message.reply_text(message, parse_mode=ParseMode.HTML)
-    else:
-        await update.message.reply_text(f"❌ По запросу '{keyword}' ничего не найдено.")
 
-# ============ Управление пользователями ============
+    if not results:
+        await update.message.reply_text(f"❌ Ничего не найдено по '{keyword}'.")
+        return
+
+    text = f"🔍 <b>Результаты по '{keyword}':</b>\n\n"
+    for tid, data in results:
+        text += f"• ID: <code>{tid}</code> | {sanitize_text(data.channel_name)}\n"
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 async def add_pr_by_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Добавление PR менеджера по ID"""
     user_id = update.effective_user.id
-    
     if not is_chief(user_id) and not is_creator(user_id):
-        await update.message.reply_text("❌ Только Chief PR Manager может добавлять PR менеджеров.")
+        await update.message.reply_text("❌ Только Chief.")
         return
-    
+
     args = context.args
     if len(args) < 2:
-        await update.message.reply_text(
-            "❌ Использование: /add_pr_by_id @username id\n"
-            "Пример: /add_pr_by_id @john 123456789"
-        )
+        await update.message.reply_text("❌ /add_pr_by_id @username id")
         return
-    
+
     try:
         username = args[0].replace('@', '')
-        new_user_id = int(args[1])
-        
-        if db.add_pr_manager(new_user_id):
-            await update.message.reply_text(
-                f"✅ Пользователь @{username} (ID: {new_user_id}) добавлен как PR Manager."
-            )
-            
-            try:
-                await context.bot.send_message(
-                    chat_id=new_user_id,
-                    text="🎉 Вас добавили как PR Manager! Теперь вы можете создавать запросы через бота.\n\n"
-                         "Используйте /start для начала работы."
-                )
-            except:
-                logger.warning(f"Не удалось отправить уведомление пользователю {new_user_id}")
-        else:
-            await update.message.reply_text("❌ Пользователь уже является PR Manager.")
-            
+        new_id = int(args[1])
+        db.add_pr_manager(new_id)
+        await update.message.reply_text(f"✅ @{username} (ID: {new_id}) добавлен.")
     except ValueError:
         await update.message.reply_text("❌ ID должен быть числом.")
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        await update.message.reply_text("❌ Произошла ошибка.")
 
 async def add_dep(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Добавление заместителя"""
     user_id = update.effective_user.id
-    
     if not is_chief(user_id) and not is_creator(user_id):
-        await update.message.reply_text("❌ Только Chief PR Manager может добавлять заместителей.")
+        await update.message.reply_text("❌ Только Chief.")
         return
-    
+
     args = context.args
     if len(args) < 2:
-        await update.message.reply_text(
-            "❌ Использование: /add_dep @username id\n"
-            "Пример: /add_dep @john 123456789"
-        )
+        await update.message.reply_text("❌ /add_dep @username id")
         return
-    
+
     try:
         username = args[0].replace('@', '')
-        new_user_id = int(args[1])
-        
-        if db.add_dep_chief(new_user_id):
-            await update.message.reply_text(
-                f"✅ Пользователь @{username} (ID: {new_user_id}) добавлен как Dep.Chief PR Manager."
-            )
-            
-            try:
-                await context.bot.send_message(
-                    chat_id=new_user_id,
-                    text="🎉 Вас добавили как Dep.Chief PR Manager! Теперь у вас есть права администратора.\n\n"
-                         "Используйте /start для начала работы."
-                )
-            except:
-                logger.warning(f"Не удалось отправить уведомление пользователю {new_user_id}")
-        else:
-            await update.message.reply_text("❌ Пользователь уже является Dep.Chief.")
-            
+        new_id = int(args[1])
+        db.add_dep_chief(new_id)
+        await update.message.reply_text(f"✅ @{username} (ID: {new_id}) добавлен как Dep.Chief.")
     except ValueError:
         await update.message.reply_text("❌ ID должен быть числом.")
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        await update.message.reply_text("❌ Произошла ошибка.")
 
 async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Удаление пользователя"""
     user_id = update.effective_user.id
-    
     if not is_chief(user_id) and not is_creator(user_id):
-        await update.message.reply_text("❌ Недостаточно прав.")
+        await update.message.reply_text("❌ Нет прав.")
         return
-    
+
     args = context.args
     if len(args) < 2:
-        await update.message.reply_text(
-            "❌ Использование: /remove_user @username id\n"
-            "Пример: /remove_user @john 123456789"
-        )
+        await update.message.reply_text("❌ /remove_user @username id")
         return
-    
+
     try:
         username = args[0].replace('@', '')
         remove_id = int(args[1])
-        
         if remove_id == CHIEF_ID:
-            await update.message.reply_text("❌ Нельзя удалить Chief PR Manager.")
+            await update.message.reply_text("❌ Нельзя удалить Chief.")
             return
-        
-        removed = False
-        if db.remove_pr_manager(remove_id):
-            removed = True
-        if db.remove_dep_chief(remove_id):
-            removed = True
-            
-        if removed:
-            await update.message.reply_text(
-                f"✅ Пользователь @{username} (ID: {remove_id}) удален."
-            )
-        else:
-            await update.message.reply_text("❌ Пользователь не найден.")
-            
+
+        removed = db.remove_pr_manager(remove_id) or db.remove_dep_chief(remove_id)
+        await update.message.reply_text(f"✅ @{username} удалён." if removed else "❌ Не найден.")
     except ValueError:
         await update.message.reply_text("❌ ID должен быть числом.")
-    except Exception as e:
-        logger.error(f"Ошибка: {e}")
-        await update.message.reply_text("❌ Произошла ошибка.")
+
+# ============ СПИСОК ПОЛЬЗОВАТЕЛЕЙ С ССЫЛКАМИ ============
 
 async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Список всех пользователей"""
     user_id = update.effective_user.id
-    
     if not is_admin(user_id) and not is_creator(user_id):
-        await update.message.reply_text("❌ Недостаточно прав.")
+        await update.message.reply_text("❌ Нет прав.")
         return
-    
-    message = "👥 <b>Список пользователей:</b>\n\n"
-    
-    if db.pr_managers:
-        message += "👤 <b>PR Managers:</b>\n"
-        for uid in db.pr_managers:
-            message += f"• <code>{uid}</code>\n"
-        message += "\n"
-    
-    if db.dep_chiefs:
-        message += "👤 <b>Dep.Chief PR Managers:</b>\n"
-        for uid in db.dep_chiefs:
-            message += f"• <code>{uid}</code>\n"
-        message += "\n"
-    
-    message += f"👑 <b>Chief PR Manager:</b>\n• <code>{CHIEF_ID}</code>"
-    
-    await update.message.reply_text(message, parse_mode=ParseMode.HTML)
 
-# ============ Обработчики кнопок (callback) ============
+    text = "👥 <b>Список пользователей</b>\n\n"
+
+    if db.pr_managers:
+        text += "👤 <b>PR Managers</b>\n"
+        for uid in db.pr_managers:
+            text += f"• <a href='tg://user?id={uid}'>{uid}</a>\n"
+        text += "\n"
+
+    if db.dep_chiefs:
+        text += "👤 <b>Dep.Chief</b>\n"
+        for uid in db.dep_chiefs:
+            text += f"• <a href='tg://user?id={uid}'>{uid}</a>\n"
+        text += "\n"
+
+    text += f"👑 <b>Chief</b>\n• <a href='tg://user?id={CHIEF_ID}'>{CHIEF_ID}</a>\n"
+    text += f"\n👑 <b>Creator</b>\n• <a href='tg://user?id={CREATOR_ID}'>{CREATOR_ID}</a>"
+
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+# ============ ОБРАБОТЧИК КНОПОК ============
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка нажатий на кнопки"""
     query = update.callback_query
     user_id = query.from_user.id
-    
+
     try:
         await query.answer()
         data = query.data
-        
-        logger.info(f"Callback получен: {data} от пользователя {user_id}")
-        
+
         if data == "new_request":
-            # Начинаем создание запроса
-            if not is_pr_manager(user_id):
-                await query.edit_message_text("❌ У вас нет прав для создания запросов.")
+            if not is_pr_manager(user_id) and not is_creator(user_id):
+                await query.edit_message_text("❌ Нет прав.")
                 return
-            
             db.set_pending_request(user_id, {})
-            
             await query.edit_message_text(
-                "📝 <b>Создание нового запроса</b>\n\n"
-                "Шаг 1 из 6: Отправьте <b>скриншот переписки с медиа</b> (файл изображения):\n\n"
-                "Для отмены отправьте /cancel",
+                "📝 <b>Шаг 1/6: отправьте СКРИНШОТ</b>",
                 parse_mode=ParseMode.HTML,
                 reply_markup=get_cancel_keyboard()
             )
-            # Устанавливаем состояние для следующего сообщения
             context.user_data['state'] = SCREENSHOT
-            
+
         elif data == "my_requests":
-            # Показываем запросы пользователя
             topics = db.get_user_topics(user_id)
-            
             if not topics:
-                await query.edit_message_text("📋 У вас пока нет созданных запросов.")
+                await query.edit_message_text("📋 У вас нет запросов.")
                 return
-            
-            message = "📋 <b>Ваши запросы:</b>\n\n"
-            for topic_id in topics:
-                if topic_id in db.topics:
-                    data_topic = db.topics[topic_id]
+            text = "📋 <b>Ваши запросы:</b>\n\n"
+            for tid in topics:
+                data_topic = db.topics.get(tid)
+                if data_topic:
                     status = "🟢 Активна" if data_topic.is_active else "🔴 Закрыта"
-                    message += (
-                        f"• <b>{sanitize_text(data_topic.channel_name)}</b>\n"
-                        f"  ID: <code>{topic_id}</code> | {status}\n"
-                        f"  📅 {format_date(data_topic.created_at)}\n"
-                        f"  👥 {data_topic.subscribers}\n\n"
-                    )
-            
-            await query.edit_message_text(message, parse_mode=ParseMode.HTML)
-            
+                    text += f"• <b>{sanitize_text(data_topic.channel_name)}</b>\n  ID: <code>{tid}</code> | {status}\n\n"
+            await query.edit_message_text(text, parse_mode=ParseMode.HTML)
+
         elif data == "search":
             if not is_admin(user_id) and not is_creator(user_id):
-                await query.edit_message_text("❌ Недостаточно прав.")
+                await query.edit_message_text("❌ Нет прав.")
                 return
-            await query.edit_message_text(
-                "🔍 Для поиска используйте команду:\n"
-                "/search <ключевое слово>\n\n"
-                "Пример: /search канал"
-            )
-            
+            await query.edit_message_text("🔍 /search <слово>")
+
         elif data == "manage_users":
             if not is_admin(user_id) and not is_creator(user_id):
-                await query.edit_message_text("❌ Недостаточно прав.")
+                await query.edit_message_text("❌ Нет прав.")
                 return
             await query.edit_message_text(
-                "👥 <b>Управление пользователями</b>\n\n"
-                "Доступные команды:\n"
-                "/add_pr_by_id @username id - добавить PR\n"
-                "/add_dep @username id - добавить Dep.Chief\n"
-                "/remove_user @username id - удалить пользователя\n"
-                "/list_users - список всех пользователей",
+                "👥 <b>Управление</b>\n\n"
+                "/add_pr_by_id @username id\n"
+                "/add_dep @username id\n"
+                "/remove_user @username id\n"
+                "/list_users",
                 parse_mode=ParseMode.HTML,
                 reply_markup=get_admin_keyboard()
             )
-            
+
+        elif data == "list_users":
+            text = "👥 <b>Список пользователей</b>\n\n"
+            if db.pr_managers:
+                text += "👤 <b>PR Managers</b>\n"
+                for uid in db.pr_managers:
+                    text += f"• <a href='tg://user?id={uid}'>{uid}</a>\n"
+                text += "\n"
+            if db.dep_chiefs:
+                text += "👤 <b>Dep.Chief</b>\n"
+                for uid in db.dep_chiefs:
+                    text += f"• <a href='tg://user?id={uid}'>{uid}</a>\n"
+                text += "\n"
+            text += f"👑 <b>Chief</b>\n• <a href='tg://user?id={CHIEF_ID}'>{CHIEF_ID}</a>\n"
+            text += f"\n👑 <b>Creator</b>\n• <a href='tg://user?id={CREATOR_ID}'>{CREATOR_ID}</a>"
+            await query.edit_message_text(text, parse_mode=ParseMode.HTML)
+
         elif data == "close_topic":
             if not is_admin(user_id) and not is_creator(user_id):
-                await query.edit_message_text("❌ Недостаточно прав.")
+                await query.edit_message_text("❌ Нет прав.")
                 return
-            await query.edit_message_text(
-                "🔒 Для закрытия темы используйте команду:\n"
-                "/close_topic <id_темы>\n\n"
-                "ID темы можно найти в сообщении или через /search"
-            )
-            
+            await query.edit_message_text("🔒 /close_topic <id>")
+
         elif data == "add_pr":
-            await query.edit_message_text(
-                "➕ <b>Добавление PR Manager</b>\n\n"
-                "Используйте команду:\n"
-                "/add_pr_by_id @username id\n\n"
-                "Пример: /add_pr_by_id @john 123456789",
-                parse_mode=ParseMode.HTML
-            )
-            
+            await query.edit_message_text("➕ /add_pr_by_id @username id")
+
         elif data == "add_dep":
-            await query.edit_message_text(
-                "👤 <b>Добавление Dep.Chief</b>\n\n"
-                "Используйте команду:\n"
-                "/add_dep @username id\n\n"
-                "Пример: /add_dep @john 123456789",
-                parse_mode=ParseMode.HTML
-            )
-            
+            await query.edit_message_text("👤 /add_dep @username id")
+
         elif data == "remove_user":
-            await query.edit_message_text(
-                "➖ <b>Удаление пользователя</b>\n\n"
-                "Используйте команду:\n"
-                "/remove_user @username id\n\n"
-                "Пример: /remove_user @john 123456789",
-                parse_mode=ParseMode.HTML
-            )
-            
-        elif data == "list_users":
-            # Список всех пользователей
-            message = "👥 <b>Список пользователей:</b>\n\n"
-            
-            if db.pr_managers:
-                message += "👤 <b>PR Managers:</b>\n"
-                for uid in db.pr_managers:
-                    message += f"• <code>{uid}</code>\n"
-                message += "\n"
-            
-            if db.dep_chiefs:
-                message += "👤 <b>Dep.Chief PR Managers:</b>\n"
-                for uid in db.dep_chiefs:
-                    message += f"• <code>{uid}</code>\n"
-                message += "\n"
-            
-            message += f"👑 <b>Chief PR Manager:</b>\n• <code>{CHIEF_ID}</code>"
-            
-            await query.edit_message_text(message, parse_mode=ParseMode.HTML)
-            
+            await query.edit_message_text("➖ /remove_user @username id")
+
         elif data == "back_to_main":
             keyboard = get_main_keyboard(
                 is_admin=is_admin(user_id),
                 is_creator=is_creator(user_id)
             )
-            user = query.from_user
-            welcome_text = f"👋 <b>Главное меню, {sanitize_text(user.full_name)}!</b>"
             await query.edit_message_text(
-                welcome_text,
-                parse_mode=ParseMode.HTML,
+                "👋 Главное меню",
                 reply_markup=keyboard
             )
-            
+
+        elif data == "settings":
+            if not is_creator(user_id):
+                await query.edit_message_text("❌ Нет прав.")
+                return
+            await query.edit_message_text(
+                f"⚙️ <b>Настройки</b>\n\n"
+                f"PR: {len(db.pr_managers)}\n"
+                f"Dep.Chief: {len(db.dep_chiefs)}\n"
+                f"Тем: {len(db.topics)}",
+                parse_mode=ParseMode.HTML
+            )
+
         elif data == "skip":
-            # Пропуск условий
             pending = db.get_pending_request(user_id) or {}
             pending['conditions'] = "Не указаны"
             db.set_pending_request(user_id, pending)
-            await query.edit_message_text("⏭️ Условия пропущены.")
-            # Завершаем создание запроса через новый update
-            # Создаем искусственное сообщение для завершения
-            class FakeMessage:
-                def __init__(self, chat_id, user):
-                    self.chat_id = chat_id
-                    self.from_user = user
-                    self.text = ""
-                    self.photo = []
-            
-            fake_update = Update(0)
+            await query.edit_message_text("⏭️ Пропущено")
+            class Fake:
+                pass
+            fake_update = Fake()
             fake_update.effective_user = query.from_user
             fake_update.effective_chat = query.message.chat
-            fake_update.message = FakeMessage(query.message.chat.id, query.from_user)
-            
+            fake_update.message = Fake()
+            fake_update.message.reply_text = lambda *a, **k: None
             await finish_request(fake_update, context)
-            
+
         elif data == "cancel":
             db.clear_pending_request(user_id)
-            await query.edit_message_text("❌ Операция отменена.")
+            await query.edit_message_text("❌ Отменено")
             keyboard = get_main_keyboard(
                 is_admin=is_admin(user_id),
                 is_creator=is_creator(user_id)
             )
-            user = query.from_user
             await context.bot.send_message(
                 chat_id=user_id,
-                text=f"👋 Возврат в главное меню, {sanitize_text(user.full_name)}",
+                text="👋 Главное меню",
                 reply_markup=keyboard
             )
-            
-        elif data == "settings":
-            if not is_creator(user_id):
-                await query.edit_message_text("❌ Недостаточно прав.")
-                return
-            await query.edit_message_text(
-                "⚙️ <b>Настройки бота</b>\n\n"
-                f"📊 PR менеджеров: {len(db.pr_managers)}\n"
-                f"📋 Активных тем: {len([t for t in db.topics.values() if t.is_active])}\n"
-                f"💾 База данных: {db.file_path}\n\n"
-                "Используйте команды для управления:",
-                parse_mode=ParseMode.HTML
-            )
-            
+
         else:
-            await query.edit_message_text("❌ Неизвестная команда. Используйте /start")
-            
+            await query.edit_message_text("❌ Неизвестно")
+
     except Exception as e:
-        logger.error(f"Ошибка в button_callback: {e}")
+        logger.error(f"Callback error: {e}")
         try:
-            await query.edit_message_text(
-                "❌ Произошла ошибка. Пожалуйста, попробуйте позже."
-            )
+            await query.edit_message_text("❌ Ошибка. Попробуйте позже.")
         except:
             pass
 
-# ============ Обработчик ошибок ============
+# ============ ОБРАБОТЧИК ОШИБОК ============
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Глобальный обработчик ошибок"""
     logger.error(f"Ошибка: {context.error}")
-    
     if update and update.effective_message:
         try:
-            await update.effective_message.reply_text(
-                "❌ Произошла ошибка. Пожалуйста, попробуйте позже."
-            )
+            await update.effective_message.reply_text("❌ Ошибка. Попробуйте позже.")
         except:
             pass
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отмена создания запроса"""
     user_id = update.effective_user.id
     db.clear_pending_request(user_id)
-    
-    await update.message.reply_text(
-        "❌ Создание запроса отменено."
-    )
+    await update.message.reply_text("❌ Отменено.")
     return ConversationHandler.END
